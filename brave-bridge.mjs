@@ -19,11 +19,11 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
+import { cpSync, existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
 import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "2.6.0";
+const VERSION = "2.6.1";
 const PROTOCOL = 2;
 const HOST = "127.0.0.1";
 const PORT = Number(process.env.BRAVE_BRIDGE_PORT || 8787);
@@ -31,9 +31,24 @@ const CMD_TIMEOUT = Number(process.env.BRAVE_BRIDGE_TIMEOUT || 45000);
 const ARTIFACT_DIR = process.env.BRAVE_CDP_ARTIFACTS || path.join(os.homedir(), ".brave-cdp", "artifacts");
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const EXT_DIR = path.join(__dirname, "brave-extension");
-const CONFIG_PATH = process.env.BRAVE_BRIDGE_CONFIG ? path.resolve(process.env.BRAVE_BRIDGE_CONFIG) : path.join(__dirname, "config.json");
-const LOG_PATH = path.join(__dirname, "server.log");
+const IN_NODE_MODULES = /[\\/]node_modules[\\/]/i.test(__dirname);
+const STATE_DIR = process.env.BRAVE_BRIDGE_HOME
+    ? path.resolve(process.env.BRAVE_BRIDGE_HOME)
+    : IN_NODE_MODULES
+      ? path.join(os.homedir(), ".brave-bridge")
+      : __dirname;
+const BUNDLED_EXT_DIR = path.join(__dirname, "brave-extension");
+const EXT_DIR = path.join(STATE_DIR, "brave-extension");
+const CONFIG_PATH = process.env.BRAVE_BRIDGE_CONFIG ? path.resolve(process.env.BRAVE_BRIDGE_CONFIG) : path.join(STATE_DIR, "config.json");
+const LOG_PATH = path.join(STATE_DIR, "server.log");
+
+function syncExtensionIfNeeded() {
+    mkdirSync(STATE_DIR, { recursive: true });
+    if (path.resolve(BUNDLED_EXT_DIR) !== path.resolve(EXT_DIR) && existsSync(BUNDLED_EXT_DIR)) {
+        cpSync(BUNDLED_EXT_DIR, EXT_DIR, { recursive: true, force: true });
+    }
+    return EXT_DIR;
+}
 const SESSION_COLORS = ["blue", "cyan", "green", "orange", "pink", "yellow", "red", "purple"];
 
 function cleanSession(s) {
@@ -79,6 +94,7 @@ function loadConfig(create = false) {
 }
 
 function saveConfig(cfg) {
+    mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
     writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
 }
 
@@ -212,6 +228,7 @@ function wsAccept(req, socket) {
 
 // ---------------------------------------------------------------- server mode
 function startServer() {
+    syncExtensionIfNeeded();
     const cfg = loadConfig(true);
     if (flags["reset-ext"]) {
         cfg.extId = null;
@@ -604,6 +621,7 @@ function printHelp() {
 
 Server:
   serve [--verbose] [--reset-ext]             # jalankan bridge (biarkan hidup)
+  extension-path                              # tampilkan (dan ekstrak bila via npm/npx) folder brave-extension
   install-autostart | uninstall-autostart     # jalan otomatis tiap login (Windows / macOS / Linux)
 
 Info:
@@ -662,6 +680,10 @@ Global: --tabId N  --session <id> (atau env BRAVE_BRIDGE_SESSION)  --timeout ms 
 
 async function runCli() {
     if (cmd === "help" || flags.help) return printHelp();
+    if (cmd === "extension-path" || cmd === "ext-path") {
+        console.log(syncExtensionIfNeeded());
+        return;
+    }
     if (cmd === "install-autostart") return installAutostart();
     if (cmd === "uninstall-autostart") return uninstallAutostart();
     if (!flags.session && process.env.BRAVE_BRIDGE_SESSION) flags.session = process.env.BRAVE_BRIDGE_SESSION;

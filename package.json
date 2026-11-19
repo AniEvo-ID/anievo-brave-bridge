@@ -1,9 +1,18 @@
 {
   "name": "anievo-brave-bridge",
-  "version": "2.6.0",
-  "description": "Control a running Brave/Chromium browser (without closing or relaunching) via an MV3 extension, zero-dependency CLI, and MCP server.",
+  "version": "2.6.1",
+  "description": "Control a running Brave/Chromium browser (without closing or relaunching) via an MV3 extension, zero-dependency CLI, and 33-tool MCP server.",
   "type": "module",
   "license": "MIT",
+  "author": {
+    "name": "AniEvo ID",
+    "email": "anievo.id@gmail.com",
+    "url": "https://github.com/AniEvo-ID"
+  },
+  "homepage": "https://github.com/AniEvo-ID/anievo-brave-bridge#readme",
+  "bugs": {
+    "url": "https://github.com/AniEvo-ID/anievo-brave-bridge/issues"
+  },
   "keywords": [
     "brave",
     "chromium",
@@ -12,6 +21,7 @@
     "mcp-server",
     "ai-agent",
     "antigravity-plugin",
+    "claude-code",
     "chrome-extension"
   ],
   "repository": {

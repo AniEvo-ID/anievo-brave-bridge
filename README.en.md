@@ -1,6 +1,7 @@
 # AniEvo Brave Bridge
 
 [![CI](https://github.com/AniEvo-ID/anievo-brave-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/AniEvo-ID/anievo-brave-bridge/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/anievo-brave-bridge)](https://www.npmjs.com/package/anievo-brave-bridge)
 [![Release](https://img.shields.io/github/v/release/AniEvo-ID/anievo-brave-bridge)](https://github.com/AniEvo-ID/anievo-brave-bridge/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
@@ -44,7 +45,16 @@ git clone https://github.com/AniEvo-ID/anievo-brave-bridge.git ~/.gemini/config/
 
 Then load the browser extension once in `brave://extensions` (**Developer mode** → **Load unpacked** → select the `brave-extension/` subfolder).
 
-### Option 2 — Standalone Clone (Any Agent / CLI)
+### Option 2 — Via npm / npx (Zero Clone)
+
+```bash
+npx anievo-brave-bridge extension-path    # extracts brave-extension/ to ~/.brave-bridge/brave-extension
+npx anievo-brave-bridge serve             # starts the local bridge server
+```
+
+Load the printed `~/.brave-bridge/brave-extension` folder once in `brave://extensions` (**Developer mode** → **Load unpacked**).
+
+### Option 3 — Standalone Git Clone
 
 ```bash
 git clone https://github.com/AniEvo-ID/anievo-brave-bridge.git ~/.brave-bridge
@@ -77,7 +87,7 @@ node brave-bridge.mjs install-autostart
 }
 ```
 
-- **Claude Code:** `claude mcp add brave-bridge -- node ~/.brave-bridge/mcp.mjs`
+- **Claude Code:** `claude mcp add brave-bridge -- npx -y -p anievo-brave-bridge brave-bridge-mcp`
 - **Antigravity:** `~/.gemini/config/mcp_config.json` (or install as a plugin above)
 - **Gemini CLI:** `~/.gemini/settings.json` → `mcpServers`
 
