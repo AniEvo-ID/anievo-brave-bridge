@@ -39,6 +39,7 @@ async function refresh() {
         const mismatch = h.server && h.server !== st.extVersion;
         $("srvVal").textContent = `v${h.server || "?"}${mismatch ? " (mismatch)" : ""}`;
         $("srvVal").className = mismatch ? "v warn" : "v";
+        if (h.mcpTools) $("mcpVal").textContent = `${h.mcpTools} tools (stdio)`;
     } catch {
         $("srvVal").textContent = "unreachable";
         $("srvVal").className = "v warn";
@@ -93,6 +94,27 @@ async function refresh() {
         list.appendChild(row);
     }
 }
+
+$("copyMcpBtn").addEventListener("click", async () => {
+    const cfg = JSON.stringify(
+        {
+            mcpServers: {
+                "brave-bridge": {
+                    command: "npx",
+                    args: ["-y", "anievo-brave-bridge", "mcp"],
+                },
+            },
+        },
+        null,
+        2
+    );
+    try {
+        await navigator.clipboard.writeText(cfg);
+        setToast("MCP JSON disalin ke clipboard!");
+    } catch {
+        setToast("Gagal akses clipboard; jalankan: brave-bridge mcp-config");
+    }
+});
 
 $("closeAllBtn").addEventListener("click", async () => {
     $("closeAllBtn").disabled = true;
