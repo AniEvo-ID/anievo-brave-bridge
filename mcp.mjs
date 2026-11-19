@@ -11,17 +11,23 @@
  */
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
-import { existsSync, readFileSync, openSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, openSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "2.6.0";
+const VERSION = "2.6.1";
 const PORT = Number(process.env.BRAVE_BRIDGE_PORT || 8787);
 const BASE = `http://127.0.0.1:${PORT}`;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const CONFIG_PATH = process.env.BRAVE_BRIDGE_CONFIG ? path.resolve(process.env.BRAVE_BRIDGE_CONFIG) : path.join(__dirname, "config.json");
+const IN_NODE_MODULES = /[\\/]node_modules[\\/]/i.test(__dirname);
+const STATE_DIR = process.env.BRAVE_BRIDGE_HOME
+    ? path.resolve(process.env.BRAVE_BRIDGE_HOME)
+    : IN_NODE_MODULES
+      ? path.join(os.homedir(), ".brave-bridge")
+      : __dirname;
+const CONFIG_PATH = process.env.BRAVE_BRIDGE_CONFIG ? path.resolve(process.env.BRAVE_BRIDGE_CONFIG) : path.join(STATE_DIR, "config.json");
 const BRIDGE = path.join(__dirname, "brave-bridge.mjs");
 const ARTIFACT_DIR = process.env.BRAVE_CDP_ARTIFACTS || path.join(os.homedir(), ".brave-cdp", "artifacts");
 const SUPPORTED_PROTOCOLS = ["2025-06-18", "2025-03-26", "2024-11-05"];
@@ -48,7 +54,8 @@ async function ensureServer() {
     if (!starting) {
         starting = (async () => {
             log("server bridge belum jalan, start otomatis...");
-            const logFd = openSync(path.join(__dirname, "server.log"), "a");
+            mkdirSync(STATE_DIR, { recursive: true });
+            const logFd = openSync(path.join(STATE_DIR, "server.log"), "a");
             const child = spawn(process.execPath, [BRIDGE, "serve"], { detached: true, stdio: ["ignore", logFd, logFd], windowsHide: true });
             child.unref();
             for (let i = 0; i < 30; i++) {

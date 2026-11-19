@@ -199,8 +199,15 @@ test("AniEvo Brave Bridge — security, CLI + extension E2E, session groups, and
     const cfg = JSON.parse(readFileSync(configPath, "utf8"));
     assert.match(cfg.token, /^[0-9a-f]{48}$/);
 
-    // --------------------------------------------------------- 1. Security checks
+    // --------------------------------------------------------- 1. Security checks & npx extension-path extraction
     await t.test("server security boundaries", async () => {
+        const fakeHome = path.join(tmp, "npx-home");
+        const extPathOut = await new Promise((resolve) => {
+            execFile(process.execPath, [BRIDGE, "extension-path"], { env: { ...env, BRAVE_BRIDGE_HOME: fakeHome } }, (_e, stdout) => resolve(stdout.trim()));
+        });
+        assert.equal(extPathOut, path.join(fakeHome, "brave-extension"));
+        assert.equal(existsSync(path.join(fakeHome, "brave-extension", "manifest.json")), true);
+
         const base = `http://127.0.0.1:${bridgePort}`;
         const noTok = await fetch(`${base}/cmd`, {
             method: "POST",

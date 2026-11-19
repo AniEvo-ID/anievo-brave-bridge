@@ -1,6 +1,7 @@
 # AniEvo Brave Bridge
 
 [![CI](https://github.com/AniEvo-ID/anievo-brave-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/AniEvo-ID/anievo-brave-bridge/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/anievo-brave-bridge)](https://www.npmjs.com/package/anievo-brave-bridge)
 [![Release](https://img.shields.io/github/v/release/AniEvo-ID/anievo-brave-bridge)](https://github.com/AniEvo-ID/anievo-brave-bridge/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
@@ -35,9 +36,18 @@ Extension **nggak buka port**. Dia yang konek keluar lewat WebSocket ke server l
 
 ## Instalasi
 
+### Via npm / npx (paling cepat)
+
 ```bash
-git clone https://github.com/AniEvo-ID/anievo-brave-bridge.git
-cd anievo-brave-bridge
+npx anievo-brave-bridge extension-path    # ekstrak extension ke ~/.brave-bridge/brave-extension
+npx anievo-brave-bridge serve             # jalankan server bridge
+```
+
+### Atau via Git clone
+
+```bash
+git clone https://github.com/AniEvo-ID/anievo-brave-bridge.git ~/.brave-bridge
+cd ~/.brave-bridge
 ```
 
 1. **Jalankan server** (yang pertama kali akan membuat `config.json` berisi token rahasia):
@@ -217,7 +227,7 @@ git clone https://github.com/AniEvo-ID/anievo-brave-bridge.git ~/.gemini/config/
 }
 ```
 
-Atau langsung lewat `npx` dari GitHub tanpa clone manual: `"command": "npx", "args": ["-y", "--package=github:AniEvo-ID/anievo-brave-bridge", "brave-bridge-mcp"]`.
+Atau langsung lewat `npx` tanpa clone manual: `"command": "npx", "args": ["-y", "-p", "anievo-brave-bridge", "brave-bridge-mcp"]`.
 
 Taruh di config MCP client lu (Antigravity: `~/.gemini/config/mcp_config.json`; Claude Code: `claude mcp add brave-bridge -- node /path/to/mcp.mjs`; Gemini CLI: `settings.json` → `mcpServers`).
 
