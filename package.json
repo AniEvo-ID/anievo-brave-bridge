@@ -1,6 +1,6 @@
 {
   "name": "anievo-brave-bridge",
-  "version": "2.6.5",
+  "version": "2.6.6",
   "description": "Control a running Brave/Chromium browser (without closing or relaunching) via an MV3 extension, zero-dependency CLI, and 33-tool MCP server.",
   "type": "module",
   "license": "MIT",
