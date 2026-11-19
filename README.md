@@ -1,12 +1,16 @@
 # AniEvo Brave Bridge
 
+[![CI](https://github.com/AniEvo-ID/anievo-brave-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/AniEvo-ID/anievo-brave-bridge/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/AniEvo-ID/anievo-brave-bridge)](https://github.com/AniEvo-ID/anievo-brave-bridge/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 Kontrol browser **Brave (atau Chromium apa pun)** yang **lagi jalan**, tanpa perlu close atau relaunch pakai `--remote-debugging-port`. Sesi login, cookie, dan tab lu tetap utuh.
 
 Dibuat buat **AI coding agent** (Antigravity, Claude Code, Gemini CLI, dll.) supaya bisa buka halaman, baca DOM, klik, isi form, screenshot, sampai capture console/network di browser asli lu, cukup lewat satu CLI.
 
 - 🧩 Extension MV3 + CLI Node.js **tanpa dependency** (Node ≥ 18)
 - 🔒 Cuma localhost, pakai token auth, dan Origin extension di-pin
-- 🗂️ Tab buatan agent otomatis masuk tab group sendiri, dan tab milik user dilindungi guard
+- 🗂️ Tab buatan agent otomatis masuk tab group sendiri (mendukung **isolasi tab group per sesi** untuk multi-agent paralel), dan tab milik user dilindungi guard
 - 🫥 **Nggak nyolong fokus**: tab agent dibuka dan dikerjain di background (klik, isi form, input trusted, screenshot), jadi lu tetap stay di tab lu
 - 🛠️ Mode CDP opsional via `chrome.debugger` (tetap tanpa relaunch)
 - 🤖 **MCP server** bawaan: 27 tool `browser_*` siap dicolok ke Antigravity / Claude Code / Gemini CLI
@@ -86,7 +90,21 @@ node brave-bridge.mjs close-group                      # tutup semua tab group "
 | **Console/Network** | `capture start\|stop\|status`, `console [--level error] [--last N] [--clear] [--all]`, `net [--filter s] [--failed] [--body <id>]` |
 | **Maintenance** | `reload-ext`, `install-autostart`, `uninstall-autostart`, `help` |
 
-**Flag global:** `--tabId N`, `--timeout ms`, `--json`, `--frame N|all`, `--force`, `--no-group`, `--foreground`, `--activate`
+**Flag global:** `--tabId N`, `--session <id>`, `--timeout ms`, `--json`, `--frame N|all`, `--force`, `--no-group`, `--foreground`, `--activate`, `--all-sessions`
+
+### Isolasi tab group per sesi (multi-agent paralel)
+
+Kalau beberapa agent jalan barengan (mis. swarm / subagent / beberapa terminal), kasih ID sesi supaya `close-group` satu agent nggak ikut nutup tab agent lain:
+
+```bash
+# CLI (atau set env BRAVE_BRIDGE_SESSION=worker-1)
+node brave-bridge.mjs new https://example.com --session worker-1   # -> group "Antigravity-worker-1"
+node brave-bridge.mjs close-group --session worker-1               # cuma nutup group sesi worker-1
+node brave-bridge.mjs close-group --all-sessions                   # bersihin semua group sesi sekaligus
+```
+
+- Tiap sesi otomatis dapet warna tab group sendiri dan dilindungi **cross-session guard** (sesi `worker-1` ditolak kalau nyoba ngubah tab milik `worker-2`).
+- Di MCP: kirim parameter `session: "worker-1"` di `browser_open` / `browser_close_group`, atau jalankan `node mcp.mjs --auto-session` (env `BRAVE_BRIDGE_AUTO_SESSION=1`) supaya tiap proses MCP punya ID sesi unik otomatis.
 
 ### Kerja di background (fokus user aman)
 
@@ -208,6 +226,18 @@ Kalau user minta akses browser Brave: cek `curl -s http://127.0.0.1:8787/health`
 lalu pakai `node <path>/brave-bridge.mjs <command>`. Selalu buka tab baru (`new <url>`), kerja
 pakai `--tabId`, mulai dari `snapshot`, dan tutup dengan `close-group` setelah selesai.
 ```
+
+---
+
+## Testing & CI
+
+Test suite otomatis (`node:test`, tetap tanpa dependency eksternal) menguji batas keamanan server, alur E2E extension di Chromium terisolasi (`--user-data-dir` terpisah, tidak menyentuh profil browser utama), isolasi tab group per sesi, dan protokol MCP:
+
+```bash
+npm test
+```
+
+Setiap push dan Pull Request otomatis diuji di GitHub Actions pada **Ubuntu (Xvfb)** dan **Windows (`--headless=new`)** menggunakan Chrome for Testing.
 
 ---
 

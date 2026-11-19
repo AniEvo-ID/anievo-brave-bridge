@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: E2E (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Chrome for Testing (supports --load-extension)
+        shell: bash
+        run: |
+          OUT=$(npx -y @puppeteer/browsers install chrome@stable --path "${RUNNER_TEMP}/cft")
+          echo "$OUT"
+          CHROME_PATH=$(echo "$OUT" | tail -n 1 | sed 's/^[^ ]* //')
+          echo "CHROME_BIN=$CHROME_PATH" >> "$GITHUB_ENV"
+
+      - name: Syntax check
+        shell: bash
+        run: |
+          node --check brave-bridge.mjs
+          node --check mcp.mjs
+          node --check brave-extension/background.js
+          node --check brave-extension/page.js
+          node --check test/bridge.test.mjs
+
+      - name: Run full test suite (Ubuntu via Xvfb)
+        if: runner.os == 'Linux'
+        env:
+          BB_HEADED: "1"
+        run: xvfb-run -a --server-args="-screen 0 1280x800x24" npm test
+
+      - name: Run full test suite (Windows headless=new)
+        if: runner.os == 'Windows'
+        run: npm test

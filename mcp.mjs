@@ -10,20 +10,23 @@
  *   { "mcpServers": { "brave-bridge": { "command": "node", "args": ["<path>/mcp.mjs"] } } }
  */
 import { spawn } from "node:child_process";
+import crypto from "node:crypto";
 import { existsSync, readFileSync, openSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "2.2.0";
+const VERSION = "2.3.0";
 const PORT = Number(process.env.BRAVE_BRIDGE_PORT || 8787);
 const BASE = `http://127.0.0.1:${PORT}`;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const CONFIG_PATH = path.join(__dirname, "config.json");
+const CONFIG_PATH = process.env.BRAVE_BRIDGE_CONFIG ? path.resolve(process.env.BRAVE_BRIDGE_CONFIG) : path.join(__dirname, "config.json");
 const BRIDGE = path.join(__dirname, "brave-bridge.mjs");
 const ARTIFACT_DIR = process.env.BRAVE_CDP_ARTIFACTS || path.join(os.homedir(), ".brave-cdp", "artifacts");
 const SUPPORTED_PROTOCOLS = ["2025-06-18", "2025-03-26", "2024-11-05"];
+const AUTO_SESSION = process.argv.includes("--auto-session") || /^(1|true)$/i.test(process.env.BRAVE_BRIDGE_AUTO_SESSION || "");
+const DEFAULT_SESSION = process.env.BRAVE_BRIDGE_SESSION || (AUTO_SESSION ? crypto.randomBytes(2).toString("hex") : "");
 
 const log = (...a) => process.stderr.write(`[brave-bridge-mcp] ${a.join(" ")}\n`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -73,11 +76,13 @@ async function bridge(cmd, args = [], flags = {}) {
     await ensureServer();
     const tok = token();
     if (!tok) throw new Error(`Token tidak ada di ${CONFIG_PATH}.`);
-    const timeout = Number(flags.timeout || 45000);
+    const f = { ...flags };
+    if (DEFAULT_SESSION && !f.session) f.session = DEFAULT_SESSION;
+    const timeout = Number(f.timeout || 45000);
     const res = await fetch(`${BASE}/cmd`, {
         method: "POST",
         headers: { "content-type": "application/json", "x-bridge-token": tok },
-        body: JSON.stringify({ cmd, args, flags, timeout }),
+        body: JSON.stringify({ cmd, args, flags: f, timeout }),
         signal: AbortSignal.timeout(timeout + 5000),
     });
     const json = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));
@@ -94,6 +99,10 @@ const S = {
     },
     frame: { type: "string", description: 'Iframe target: frame id (see browser_frames) or "all" to search every frame.' },
     trusted: { type: "boolean", description: "Use CDP for trusted input (event.isTrusted=true). Works in background tabs; shows Brave's debugging bar briefly." },
+    session: {
+        type: "string",
+        description: 'Optional session id (e.g. "w1") to isolate tabs in group "Antigravity-<session>" when multiple agents run in parallel.',
+    },
 };
 const obj = (props, required = []) => ({ type: "object", properties: props, required, additionalProperties: false });
 
@@ -102,6 +111,7 @@ const common = (a) => {
     if (a.tabId !== undefined) f.tabId = a.tabId;
     if (a.frame !== undefined) f.frame = String(a.frame);
     if (a.timeoutMs !== undefined) f.timeout = a.timeoutMs;
+    if (a.session !== undefined) f.session = String(a.session);
     return f;
 };
 
@@ -113,22 +123,36 @@ const TOOLS = [
         inputSchema: obj({}),
         run: async () => {
             const ext = await bridge("status");
-            return { health: await health(), ext };
+            return { health: await health(), ext, defaultSession: DEFAULT_SESSION || null };
         },
     },
     {
         name: "browser_tabs",
-        description: 'List open tabs (id, title, url, group). Filter by tab group name with "group".',
+        description: 'List open tabs (id, title, url, group). Filter by "group", "session", or set "allSessions" for all agent groups.',
         readOnly: true,
-        inputSchema: obj({ group: { type: "string" } }),
-        run: (a) => bridge("tabs", [], a.group ? { group: a.group } : {}),
+        inputSchema: obj({ group: { type: "string" }, session: S.session, allSessions: { type: "boolean" } }),
+        run: (a) => {
+            const f = {};
+            if (a.group) f.group = a.group;
+            if (a.session) f.session = a.session;
+            if (a.allSessions) f["all-sessions"] = true;
+            return bridge("tabs", [], f);
+        },
     },
     {
         name: "browser_open",
         description:
-            'Open URL in a NEW tab inside the agent tab group (default "Antigravity"), in the BACKGROUND so the user keeps their current tab. Returns tabId — pass it to every other tool.',
-        inputSchema: obj({ url: { type: "string" }, foreground: { type: "boolean", description: "Activate the tab (only if the user asks)." } }, ["url"]),
-        run: (a) => bridge("new", [a.url], a.foreground ? { foreground: true } : {}),
+            'Open URL in a NEW tab inside the agent tab group (default "Antigravity", or "Antigravity-<session>" when session is set), in the BACKGROUND so the user keeps their current tab. Returns tabId — pass it to every other tool.',
+        inputSchema: obj(
+            { url: { type: "string" }, session: S.session, foreground: { type: "boolean", description: "Activate the tab (only if the user asks)." } },
+            ["url"]
+        ),
+        run: (a) => {
+            const f = {};
+            if (a.foreground) f.foreground = true;
+            if (a.session) f.session = a.session;
+            return bridge("new", [a.url], f);
+        },
     },
     {
         name: "browser_navigate",
@@ -359,9 +383,15 @@ const TOOLS = [
     },
     {
         name: "browser_close_group",
-        description: 'Close ALL tabs in the agent tab group (default "Antigravity"). Call this when the task is done. User tabs are never touched.',
-        inputSchema: obj({ group: { type: "string" } }),
-        run: (a) => bridge("close-group", a.group ? [a.group] : [], {}),
+        description:
+            'Close ALL tabs in the agent tab group (default "Antigravity", or "Antigravity-<session>" when session is set). Set allSessions=true to close every agent session group. User tabs are never touched.',
+        inputSchema: obj({ group: { type: "string" }, session: S.session, allSessions: { type: "boolean" } }),
+        run: (a) => {
+            const f = {};
+            if (a.session) f.session = a.session;
+            if (a.allSessions) f["all-sessions"] = true;
+            return bridge("close-group", a.group ? [a.group] : [], f);
+        },
     },
 ];
 const TOOL_MAP = new Map(TOOLS.map((t) => [t.name, t]));

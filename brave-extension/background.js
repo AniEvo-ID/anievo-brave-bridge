@@ -57,23 +57,37 @@ async function ensureInjectable(tabId) {
     return t;
 }
 
+// Fallback kalau tab strip tidak mendukung tabGroups (mis. Chromium headless di CI).
+const virtualGroups = new Map(); // tabId -> groupTitle
+chrome.tabs.onRemoved.addListener((tabId) => virtualGroups.delete(tabId));
+
 async function groupTitleOf(tab) {
-    if (tab.groupId === undefined || tab.groupId === -1) return null;
-    const g = await chrome.tabGroups.get(tab.groupId).catch(() => null);
-    return g ? g.title : null;
+    if (tab.groupId !== undefined && tab.groupId !== -1) {
+        const g = await chrome.tabGroups.get(tab.groupId).catch(() => null);
+        if (g) return g.title;
+    }
+    return virtualGroups.get(tab.id) || null;
 }
 
-// Tolak aksi yang mengubah tab milik user (di luar group bridge), kecuali --force.
+const isAgentGroupTitle = (title, base) => title === base || (typeof title === "string" && title.startsWith(base + "-"));
+
+// Tolak aksi yang mengubah tab milik user (di luar group bridge) atau tab sesi agent lain, kecuali --force.
 async function guard(cmd, tabId, flags) {
     if (!truthy(flags.__guard) || truthy(flags.force) || !MUTATING.has(cmd)) return;
-    const want = String(flags.__guardGroup || "Antigravity");
+    const base = String(flags.__guardGroup || "Antigravity");
     const t = await chrome.tabs.get(tabId).catch(() => null);
     if (!t) throw bad(`Tab tidak ketemu: ${tabId}`);
     const title = await groupTitleOf(t);
-    if (title !== want) {
+    if (!isAgentGroupTitle(title, base)) {
         throw bad(
-            `GUARD: tab ${tabId} ("${(t.title || "").slice(0, 60)}") bukan di group "${want}", jadi dianggap tab milik user. ` +
+            `GUARD: tab ${tabId} ("${(t.title || "").slice(0, 60)}") bukan di group "${base}" (atau "${base}-*"), jadi dianggap tab milik user. ` +
             `Pakai tab sendiri (new <url> / goto <url> --new, lalu --tabId N), atau tambah --force kalau user memang minta.`
+        );
+    }
+    if (flags.__sessionGroup && title !== String(flags.__sessionGroup)) {
+        throw bad(
+            `GUARD: tab ${tabId} ada di group sesi lain ("${title}"), bukan sesi aktif ("${flags.__sessionGroup}"). ` +
+            `Pakai --tabId milik sesi ini, atau tambah --force.`
         );
     }
 }
@@ -106,14 +120,20 @@ async function applyGroup(tabId, flags) {
     const title = String(name);
     const tab = await chrome.tabs.get(tabId);
     let groupId;
-    const found = await chrome.tabGroups.query({ windowId: tab.windowId, title }).catch(() => []);
-    if (found.length) groupId = found[0].id;
-    groupId = await chrome.tabs.group(groupId ? { tabIds: [tabId], groupId } : { tabIds: [tabId] });
-    const patch = { title };
-    const color = typeof flags.color === "string" ? flags.color.toLowerCase() : null;
-    if (color && GROUP_COLORS.includes(color)) patch.color = color;
-    await chrome.tabGroups.update(groupId, patch).catch(() => { });
-    return groupId;
+    try {
+        const found = await chrome.tabGroups.query({ windowId: tab.windowId, title }).catch(() => []);
+        if (found.length) groupId = found[0].id;
+        groupId = await chrome.tabs.group(groupId ? { tabIds: [tabId], groupId } : { tabIds: [tabId] });
+        const patch = { title };
+        const color = typeof flags.color === "string" ? flags.color.toLowerCase() : null;
+        if (color && GROUP_COLORS.includes(color)) patch.color = color;
+        await chrome.tabGroups.update(groupId, patch).catch(() => { });
+        return groupId;
+    } catch {
+        // Headless Chromium tanpa tab strip: simpan asosiasi group di memori.
+        virtualGroups.set(tabId, title);
+        return -2;
+    }
 }
 
 // ------------------------------------------------------------------ DOM (isolated world)
@@ -531,31 +551,48 @@ async function handle(cmd, params = {}) {
             const tabs = await chrome.tabs.query({});
             const groups = await chrome.tabGroups.query({}).catch(() => []);
             const gmap = new Map(groups.map((g) => [g.id, g.title]));
-            let out = tabs.map((t) => ({
-                id: t.id,
-                windowId: t.windowId,
-                active: !!t.active,
-                pinned: !!t.pinned,
-                groupId: t.groupId === -1 || t.groupId === undefined ? null : t.groupId,
-                group: t.groupId === -1 || t.groupId === undefined ? null : gmap.get(t.groupId) || null,
-                title: t.title,
-                url: t.url,
-            }));
-            if (typeof flags.group === "string") out = out.filter((t) => t.group === flags.group);
+            let out = tabs.map((t) => {
+                const real = t.groupId === -1 || t.groupId === undefined ? null : gmap.get(t.groupId) || null;
+                return {
+                    id: t.id,
+                    windowId: t.windowId,
+                    active: !!t.active,
+                    pinned: !!t.pinned,
+                    groupId: t.groupId === -1 || t.groupId === undefined ? null : t.groupId,
+                    group: real || virtualGroups.get(t.id) || null,
+                    title: t.title,
+                    url: t.url,
+                };
+            });
+            if (truthy(flags["all-sessions"])) {
+                const base = String(flags.__guardGroup || "Antigravity");
+                out = out.filter((t) => isAgentGroupTitle(t.group, base));
+            } else if (typeof flags.group === "string") {
+                out = out.filter((t) => t.group === flags.group);
+            }
             return out;
         }
 
         case "closegroup":
         case "close-group": {
+            const allSess = truthy(flags["all-sessions"]);
+            const base = String(flags.__guardGroup || "Antigravity");
             const title = String(args[0] || flags.group || "");
-            if (!title) throw bad('Butuh nama group: close-group "Nama"');
-            const groups = await chrome.tabGroups.query({ title }).catch(() => []);
-            if (!groups.length) return { closed: [], count: 0, group: title, note: `group "${title}" tidak ada` };
-            const gids = new Set(groups.map((g) => g.id));
-            const targets = (await chrome.tabs.query({})).filter((t) => gids.has(t.groupId)).map((t) => t.id);
-            for (const id of targets) if (dbg.has(id)) await detach(id);
+            if (!allSess && !title) throw bad('Butuh nama group: close-group "Nama"');
+            const groups = await chrome.tabGroups.query({}).catch(() => []);
+            const matchTitle = (t) => (allSess ? isAgentGroupTitle(t, base) : t === title);
+            const gids = new Set(groups.filter((g) => matchTitle(g.title)).map((g) => g.id));
+            const targets = (await chrome.tabs.query({}))
+                .filter((t) => gids.has(t.groupId) || matchTitle(virtualGroups.get(t.id)))
+                .map((t) => t.id);
+            const label = allSess ? `${base} + ${base}-*` : title;
+            if (!gids.size && !targets.length) return { closed: [], count: 0, group: label, note: `group "${label}" tidak ada` };
+            for (const id of targets) {
+                virtualGroups.delete(id);
+                if (dbg.has(id)) await detach(id);
+            }
             if (targets.length) await chrome.tabs.remove(targets);
-            return { closed: targets, count: targets.length, group: title };
+            return { closed: targets, count: targets.length, group: label };
         }
 
         case "frames": {
@@ -586,7 +623,7 @@ async function handle(cmd, params = {}) {
             }
             if (!truthy(flags.nowait)) await waitComplete(id, Number(flags.timeout || 25000));
             const t = await chrome.tabs.get(id);
-            return { tabId: t.id, url: t.url, title: t.title, status: t.status, groupId };
+            return { tabId: t.id, url: t.url, title: t.title, status: t.status, groupId, group: await groupTitleOf(t) };
         }
 
         case "new": {
@@ -595,7 +632,7 @@ async function handle(cmd, params = {}) {
             const groupId = await applyGroup(t.id, flags);
             if (url !== "about:blank" && !truthy(flags.nowait)) await waitComplete(t.id, Number(flags.timeout || 25000));
             const tab = await chrome.tabs.get(t.id);
-            return { tabId: tab.id, url: tab.url, title: tab.title, groupId };
+            return { tabId: tab.id, url: tab.url, title: tab.title, groupId, group: await groupTitleOf(tab) };
         }
 
         case "close": {
