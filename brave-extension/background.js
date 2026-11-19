@@ -1011,6 +1011,59 @@ setInterval(() => {
     if (ws && ws.readyState === WebSocket.OPEN) ws.send('{"type":"hb"}');
 }, 20000);
 
+// Pesan internal dari Popup UI (hanya dari extension ini sendiri).
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (!sender || sender.id !== chrome.runtime.id || !msg) return false;
+    (async () => {
+        if (msg.type === "popup-state") {
+            const base = "Antigravity";
+            const tabs = await chrome.tabs.query({});
+            const groups = await chrome.tabGroups.query({}).catch(() => []);
+            const gmap = new Map(groups.map((g) => [g.id, { title: g.title, color: g.color }]));
+            const byGroup = new Map();
+            for (const t of tabs) {
+                const info = t.groupId !== -1 && t.groupId !== undefined ? gmap.get(t.groupId) : null;
+                const title = (info && info.title) || virtualGroups.get(t.id) || null;
+                if (!isAgentGroupTitle(title, base)) continue;
+                const cur = byGroup.get(title) || { title, color: (info && info.color) || "purple", count: 0 };
+                cur.count++;
+                byGroup.set(title, cur);
+            }
+            return {
+                ok: true,
+                connected: !!(ws && ws.readyState === WebSocket.OPEN),
+                wsUrl: WS_URL,
+                httpBase: WS_URL.replace(/^ws:/, "http:").replace(/\/ws$/, ""),
+                extVersion: VERSION,
+                extId: chrome.runtime.id,
+                totalTabs: tabs.length,
+                cdpAttached: [...dbg.keys()],
+                agentGroups: [...byGroup.values()],
+            };
+        }
+        if (msg.type === "popup-reconnect") {
+            if (ws) {
+                try {
+                    ws.close();
+                } catch {
+                    /* ignore */
+                }
+                ws = null;
+            }
+            backoff = 500;
+            connect();
+            await sleep(350);
+            return { ok: true, connected: !!(ws && ws.readyState === WebSocket.OPEN) };
+        }
+        if (msg.type === "popup-close-group") {
+            const flags = msg.all ? { "all-sessions": true, __guardGroup: "Antigravity" } : { group: msg.group, __guardGroup: "Antigravity" };
+            return { ok: true, ...(await handle("close-group", { args: [], flags })) };
+        }
+        return { ok: false, error: "unknown message" };
+    })().then(sendResponse, (e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
+    return true;
+});
+
 chrome.runtime.onInstalled.addListener(connect);
 chrome.runtime.onStartup.addListener(connect);
 chrome.alarms.onAlarm.addListener(connect);

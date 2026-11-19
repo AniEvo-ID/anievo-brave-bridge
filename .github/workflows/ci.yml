@@ -37,6 +37,7 @@ jobs:
           node --check mcp.mjs
           node --check brave-extension/background.js
           node --check brave-extension/page.js
+          node --check brave-extension/popup.js
           node --check test/bridge.test.mjs
 
       - name: Run full test suite (Ubuntu via Xvfb)

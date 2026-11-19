@@ -390,8 +390,16 @@ test("AniEvo Brave Bridge — security, CLI + extension E2E, session groups, and
         assert.match(blocked.err, /GUARD/);
         assert.equal((await cli(["title", "--tabId", String(userTabId)])).code, 0);
 
+        // Extension popup page exists, renders title, and is protected against script injection.
+        const pinnedExtId = JSON.parse(readFileSync(configPath, "utf8")).extId;
+        assert.match(pinnedExtId, /^[a-p]{32}$/);
+        const popTab = JSON.parse((await cli(["new", `chrome-extension://${pinnedExtId}/popup.html`, "--json"])).out);
+        assert.equal(popTab.title, "AniEvo Brave Bridge");
+        const popEval = await cli(["eval", "1+1", "--tabId", String(popTab.tabId)]);
+        assert.notEqual(popEval.code, 0);
+
         const closed = await cli(["close-group"]);
-        assert.match(closed.out, /Group "Antigravity": ditutup 2 tab/);
+        assert.match(closed.out, /Group "Antigravity": ditutup 3 tab/);
     });
 
     await t.test("per-session tab groups isolate parallel agents", async () => {

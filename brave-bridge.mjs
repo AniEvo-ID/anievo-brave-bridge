@@ -14,6 +14,7 @@
  *
  * Zero dependency, Node >= 18.
  */
+import { execFileSync } from "node:child_process";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -22,7 +23,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "
 import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "2.3.0";
+const VERSION = "2.4.0";
 const PROTOCOL = 2;
 const HOST = "127.0.0.1";
 const PORT = Number(process.env.BRAVE_BRIDGE_PORT || 8787);
@@ -495,25 +496,98 @@ async function readStdin() {
     return s;
 }
 
-function startupVbsPath() {
-    return path.join(process.env.APPDATA || "", "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "brave-bridge.vbs");
+function autostartSpec() {
+    const scriptPath = fileURLToPath(import.meta.url);
+    const home = os.homedir();
+    if (process.platform === "win32") {
+        const file = path.join(process.env.APPDATA || path.join(home, "AppData", "Roaming"), "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "brave-bridge.vbs");
+        const q = (s) => s.replace(/"/g, '""');
+        const line = `cmd /c ""${q(process.execPath)}" "${q(scriptPath)}" serve >> "${q(LOG_PATH)}" 2>&1"`;
+        const content = `' brave-bridge autostart (dibuat oleh brave-bridge.mjs install-autostart)\r\nCreateObject("WScript.Shell").Run "${q(line)}", 0, False\r\n`;
+        return { kind: "windows-startup", file, content };
+    }
+    if (process.platform === "darwin") {
+        const label = "id.anievo.brave-bridge";
+        const file = path.join(home, "Library", "LaunchAgents", `${label}.plist`);
+        const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        const content = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>${label}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${esc(process.execPath)}</string>
+    <string>${esc(scriptPath)}</string>
+    <string>serve</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>${esc(LOG_PATH)}</string>
+  <key>StandardErrorPath</key><string>${esc(LOG_PATH)}</string>
+</dict>
+</plist>
+`;
+        return { kind: "launchd", file, content };
+    }
+    const unitDir = path.join(process.env.XDG_CONFIG_HOME || path.join(home, ".config"), "systemd", "user");
+    const file = path.join(unitDir, "brave-bridge.service");
+    const content = `[Unit]
+Description=AniEvo Brave Bridge local server
+After=default.target
+
+[Service]
+Type=simple
+ExecStart="${process.execPath}" "${scriptPath}" serve
+Restart=on-failure
+RestartSec=2
+StandardOutput=append:${LOG_PATH}
+StandardError=append:${LOG_PATH}
+
+[Install]
+WantedBy=default.target
+`;
+    return { kind: "systemd-user", file, content };
 }
 
 function installAutostart() {
-    const vbs = startupVbsPath();
-    const q = (s) => s.replace(/"/g, '""');
-    const line = `cmd /c ""${q(process.execPath)}" "${q(fileURLToPath(import.meta.url))}" serve >> "${q(LOG_PATH)}" 2>&1"`;
-    mkdirSync(path.dirname(vbs), { recursive: true });
-    writeFileSync(vbs, `' brave-bridge autostart (dibuat oleh brave-bridge.mjs install-autostart)\r\nCreateObject("WScript.Shell").Run "${q(line)}", 0, False\r\n`);
-    console.log(`Autostart terpasang: ${vbs}`);
-    console.log(`Server akan jalan otomatis (tersembunyi) tiap login Windows. Log: ${LOG_PATH}`);
+    const spec = autostartSpec();
+    mkdirSync(path.dirname(spec.file), { recursive: true });
+    writeFileSync(spec.file, spec.content);
+    if (spec.kind === "launchd") {
+        try {
+            execFileSync("launchctl", ["unload", spec.file], { stdio: "ignore" });
+        } catch { /* ignore */ }
+        try {
+            execFileSync("launchctl", ["load", spec.file], { stdio: "ignore" });
+        } catch { /* ignore */ }
+    } else if (spec.kind === "systemd-user") {
+        try {
+            execFileSync("systemctl", ["--user", "daemon-reload"], { stdio: "ignore" });
+            execFileSync("systemctl", ["--user", "enable", "--now", "brave-bridge.service"], { stdio: "ignore" });
+        } catch {
+            console.log("Catatan: systemctl --user belum aktif di sesi ini; unit sudah ditulis dan akan jalan saat sesi desktop aktif.");
+        }
+    }
+    console.log(`Autostart (${spec.kind}) terpasang: ${spec.file}`);
+    console.log(`Server jalan otomatis tiap login. Log: ${LOG_PATH}`);
 }
 
 function uninstallAutostart() {
-    const vbs = startupVbsPath();
-    if (existsSync(vbs)) {
-        unlinkSync(vbs);
-        console.log(`Autostart dihapus: ${vbs}`);
+    const spec = autostartSpec();
+    if (spec.kind === "launchd" && existsSync(spec.file)) {
+        try {
+            execFileSync("launchctl", ["unload", spec.file], { stdio: "ignore" });
+        } catch { /* ignore */ }
+    } else if (spec.kind === "systemd-user" && existsSync(spec.file)) {
+        try {
+            execFileSync("systemctl", ["--user", "disable", "--now", "brave-bridge.service"], { stdio: "ignore" });
+            execFileSync("systemctl", ["--user", "daemon-reload"], { stdio: "ignore" });
+        } catch { /* ignore */ }
+    }
+    if (existsSync(spec.file)) {
+        unlinkSync(spec.file);
+        console.log(`Autostart dihapus: ${spec.file}`);
     } else console.log("Autostart tidak terpasang.");
 }
 
@@ -522,7 +596,7 @@ function printHelp() {
 
 Server:
   serve [--verbose] [--reset-ext]             # jalankan bridge (biarkan hidup)
-  install-autostart | uninstall-autostart     # jalan otomatis tiap login Windows
+  install-autostart | uninstall-autostart     # jalan otomatis tiap login (Windows / macOS / Linux)
 
 Info:
   status | tabs [--group "Nama"] | active | frames | url | title

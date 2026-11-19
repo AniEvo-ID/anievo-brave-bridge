@@ -14,6 +14,7 @@ Dibuat buat **AI coding agent** (Antigravity, Claude Code, Gemini CLI, dll.) sup
 - 🫥 **Nggak nyolong fokus**: tab agent dibuka dan dikerjain di background (klik, isi form, input trusted, screenshot), jadi lu tetap stay di tab lu
 - 🛠️ Mode CDP opsional via `chrome.debugger` (tetap tanpa relaunch)
 - 🤖 **MCP server** bawaan: 27 tool `browser_*` siap dicolok ke Antigravity / Claude Code / Gemini CLI
+- 🎛️ **Popup UI di toolbar Brave**: lihat status koneksi live, daftar tab group agent aktif, dan tombol *Close All Agent Tabs* sekali klik
 
 ---
 
@@ -47,7 +48,7 @@ cd anievo-brave-bridge
    curl -s http://127.0.0.1:8787/health     # "ext": true
    node brave-bridge.mjs status
    ```
-4. *(Opsional, Windows)* jalan otomatis tiap login:
+4. *(Opsional)* jalan otomatis tiap login (**Windows** Startup, **macOS** `launchd` LaunchAgent, **Linux** `systemd --user`):
    ```bash
    node brave-bridge.mjs install-autostart   # hapus: uninstall-autostart
    ```

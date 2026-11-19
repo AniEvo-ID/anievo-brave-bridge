@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <title>AniEvo Brave Bridge</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --card: #181b24;
+      --border: #262b38;
+      --text: #f1f5f9;
+      --muted: #94a3b8;
+      --accent: #8b5cf6;
+      --green: #22c55e;
+      --red: #ef4444;
+      --amber: #f59e0b;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      width: 320px;
+      font: 12.5px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding: 14px;
+      user-select: none;
+    }
+    .hdr {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+    }
+    .brand img { width: 26px; height: 26px; border-radius: 6px; }
+    .brand-title { font-weight: 650; font-size: 13.5px; letter-spacing: -0.01em; }
+    .brand-sub { font-size: 11px; color: var(--muted); }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 9px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+      border: 1px solid var(--border);
+      background: var(--card);
+    }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+    .pill.on { border-color: rgba(34, 197, 94, 0.35); color: #86efac; }
+    .pill.on .dot { background: var(--green); box-shadow: 0 0 8px var(--green); }
+    .pill.off { border-color: rgba(239, 68, 68, 0.35); color: #fca5a5; }
+    .pill.off .dot { background: var(--red); }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 11px;
+      margin-bottom: 10px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      row-gap: 5px;
+      font-size: 11.5px;
+    }
+    .k { color: var(--muted); }
+    .v { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; color: var(--text); }
+    .warn { color: var(--amber); }
+
+    .sec-hdr {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+      margin-bottom: 7px;
+    }
+    .groups { display: flex; flex-direction: column; gap: 6px; }
+    .empty { font-size: 11.5px; color: var(--muted); padding: 2px 0; }
+    .grp {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 8px;
+      border-radius: 7px;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    .grp-left { display: flex; align-items: center; gap: 7px; min-width: 0; }
+    .swatch { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--accent); }
+    .grp-name { font-weight: 550; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .grp-count { font-size: 11px; color: var(--muted); }
+    .grp-close {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      border-radius: 5px;
+      padding: 2px 7px;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .grp-close:hover { color: #fca5a5; border-color: rgba(239, 68, 68, 0.45); background: rgba(239, 68, 68, 0.1); }
+
+    .actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 7px;
+    }
+    button.btn {
+      appearance: none;
+      border: 1px solid var(--border);
+      background: var(--card);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 7px 9px;
+      font-size: 11.5px;
+      font-weight: 550;
+      cursor: pointer;
+      transition: background 0.12s, border-color 0.12s;
+    }
+    button.btn:hover:not(:disabled) { background: #222633; border-color: #384056; }
+    button.btn:disabled { opacity: 0.45; cursor: default; }
+    button.btn.danger { grid-column: 1 / -1; border-color: rgba(239, 68, 68, 0.35); color: #fecaca; }
+    button.btn.danger:hover:not(:disabled) { background: rgba(239, 68, 68, 0.14); border-color: rgba(239, 68, 68, 0.55); }
+    .toast {
+      margin-top: 8px;
+      font-size: 11px;
+      color: var(--muted);
+      text-align: center;
+      min-height: 15px;
+    }
+  </style>
+</head>
+<body>
+  <div class="hdr">
+    <div class="brand">
+      <img src="icons/icon48.png" alt="">
+      <div>
+        <div class="brand-title">AniEvo Brave Bridge</div>
+        <div class="brand-sub" id="verText">v—</div>
+      </div>
+    </div>
+    <div class="pill" id="statusPill"><span class="dot"></span><span id="statusText">…</span></div>
+  </div>
+
+  <div class="card">
+    <div class="grid">
+      <span class="k">Server</span><span class="v" id="srvVal">—</span>
+      <span class="k">Transport</span><span class="v" id="wsVal">—</span>
+      <span class="k">Open Tabs</span><span class="v" id="tabsVal">—</span>
+      <span class="k">CDP Attached</span><span class="v" id="cdpVal">0</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="sec-hdr">
+      <span>Agent Tab Groups</span>
+      <span id="agentTotal">0 tab</span>
+    </div>
+    <div class="groups" id="groupList">
+      <div class="empty">Tidak ada tab agent aktif.</div>
+    </div>
+  </div>
+
+  <div class="actions">
+    <button class="btn danger" id="closeAllBtn" disabled>Close All Agent Tabs</button>
+    <button class="btn" id="reconnectBtn">Reconnect</button>
+    <button class="btn" id="reloadBtn">Reload Ext</button>
+  </div>
+  <div class="toast" id="toast"></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
