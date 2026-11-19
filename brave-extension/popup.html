@@ -129,6 +129,8 @@
     }
     button.btn:hover:not(:disabled) { background: #222633; border-color: #384056; }
     button.btn:disabled { opacity: 0.45; cursor: default; }
+    button.btn.accent { grid-column: 1 / -1; border-color: rgba(139, 92, 246, 0.45); color: #ddd6fe; }
+    button.btn.accent:hover:not(:disabled) { background: rgba(139, 92, 246, 0.16); border-color: rgba(139, 92, 246, 0.7); }
     button.btn.danger { grid-column: 1 / -1; border-color: rgba(239, 68, 68, 0.35); color: #fecaca; }
     button.btn.danger:hover:not(:disabled) { background: rgba(239, 68, 68, 0.14); border-color: rgba(239, 68, 68, 0.55); }
     .toast {
@@ -155,6 +157,7 @@
   <div class="card">
     <div class="grid">
       <span class="k">Server</span><span class="v" id="srvVal">—</span>
+      <span class="k">MCP Server</span><span class="v" id="mcpVal">33 tools (stdio)</span>
       <span class="k">Transport</span><span class="v" id="wsVal">—</span>
       <span class="k">Open Tabs</span><span class="v" id="tabsVal">—</span>
       <span class="k">CDP Attached</span><span class="v" id="cdpVal">0</span>
@@ -172,6 +175,7 @@
   </div>
 
   <div class="actions">
+    <button class="btn accent" id="copyMcpBtn">Copy MCP Config (JSON)</button>
     <button class="btn danger" id="closeAllBtn" disabled>Close All Agent Tabs</button>
     <button class="btn" id="reconnectBtn">Reconnect</button>
     <button class="btn" id="reloadBtn">Reload Ext</button>

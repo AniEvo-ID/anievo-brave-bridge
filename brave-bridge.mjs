@@ -23,7 +23,7 @@ import { cpSync, existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync 
 import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "2.6.4";
+const VERSION = "2.6.5";
 const PROTOCOL = 2;
 const HOST = "127.0.0.1";
 const PORT = Number(process.env.BRAVE_BRIDGE_PORT || 8787);
@@ -102,7 +102,7 @@ function saveConfig(cfg) {
 // Flag boolean murni: jangan "makan" argumen positional sesudahnya.
 const BOOL_FLAGS = new Set(["new", "nowait", "background", "hard", "isolated", "cdp", "no-cdp", "append", "force", "clear", "gone",
     "full", "jpeg", "jpg", "viewport", "no-headings", "failed", "dry-run", "no-group", "json", "verbose", "reset-ext", "help", "all",
-    "foreground", "activate", "all-sessions", "double", "landscape", "no-bg", "secure", "httpOnly", "http-only", "sessionStorage", "session-storage", "mobile"]);
+    "foreground", "activate", "all-sessions", "double", "landscape", "no-bg", "secure", "httpOnly", "http-only", "sessionStorage", "session-storage", "mobile", "auto-session"]);
 const argv = process.argv.slice(2);
 const positional = [];
 const flags = {};
@@ -306,6 +306,7 @@ function startServer() {
                 server: VERSION,
                 protocol: PROTOCOL,
                 transport: "websocket",
+                mcpTools: 33,
                 lastSeenAgoMs: ext ? Date.now() - ext.lastSeen : null,
                 pending: waiters.size,
             });
@@ -619,8 +620,10 @@ function uninstallAutostart() {
 function printHelp() {
     console.log(`brave-bridge v${VERSION} — kontrol Brave yang sedang jalan (tanpa close/relaunch).
 
-Server:
-  serve [--verbose] [--reset-ext]             # jalankan bridge (biarkan hidup)
+Server & MCP:
+  serve [--verbose] [--reset-ext]             # jalankan bridge HTTP + WebSocket (biarkan hidup)
+  mcp [--auto-session]                        # jalankan MCP server stdio (33 tool browser_*; auto-start serve)
+  mcp-config                                  # tampilkan JSON konfigurasi mcpServers siap copy-paste
   extension-path                              # tampilkan (dan ekstrak bila via npm/npx) folder brave-extension
   install-autostart | uninstall-autostart     # jalan otomatis tiap login (Windows / macOS / Linux)
 
@@ -680,6 +683,13 @@ Global: --tabId N  --session <id> (atau env BRAVE_BRIDGE_SESSION)  --timeout ms 
 
 async function runCli() {
     if (cmd === "help" || flags.help) return printHelp();
+    if (cmd === "mcp-config") {
+        const mcpEntry = IN_NODE_MODULES
+            ? { command: "npx", args: ["-y", "anievo-brave-bridge", "mcp"] }
+            : { command: "node", args: [path.join(__dirname, "mcp.mjs")] };
+        console.log(JSON.stringify({ mcpServers: { "brave-bridge": mcpEntry } }, null, 2));
+        return;
+    }
     if (cmd === "extension-path" || cmd === "ext-path") {
         console.log(syncExtensionIfNeeded());
         return;
@@ -756,4 +766,5 @@ async function runCli() {
 }
 
 if (cmd === "serve" || cmd === "server") startServer();
+else if (cmd === "mcp") await import(new URL("./mcp.mjs", import.meta.url));
 else runCli();
