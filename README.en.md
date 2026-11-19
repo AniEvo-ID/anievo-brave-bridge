@@ -72,23 +72,28 @@ node brave-bridge.mjs install-autostart
 
 ---
 
-## AI Agent Integration (MCP Server)
+## AI Agent Integration (MCP Server — 33 Tools)
 
-`mcp.mjs` is a zero-dependency stdio MCP server exposing **33 `browser_*` tools**. If the local bridge server is not running yet, `mcp.mjs` starts it automatically in the background.
+AniEvo Brave Bridge ships a built-in zero-dependency stdio MCP server exposing **33 `browser_*` tools**. If the local bridge server is not running yet, the MCP server starts it automatically in the background.
+
+> 💡 **Quick tip:** Click the **AniEvo Brave Bridge** toolbar icon in Brave → **Copy MCP Config (JSON)**, or run `npx anievo-brave-bridge mcp-config`.
 
 ```json
 {
   "mcpServers": {
     "brave-bridge": {
-      "command": "node",
-      "args": ["/path/to/anievo-brave-bridge/mcp.mjs"]
+      "command": "npx",
+      "args": ["-y", "anievo-brave-bridge", "mcp"]
     }
   }
 }
 ```
 
-- **Claude Code:** `claude mcp add brave-bridge -- npx -y -p anievo-brave-bridge brave-bridge-mcp`
-- **Antigravity:** `~/.gemini/config/mcp_config.json` (or install as a plugin above)
+Or using a local clone: `"command": "node", "args": ["/path/to/anievo-brave-bridge/brave-bridge.mjs", "mcp"]` (pass `"--auto-session"` when running multiple parallel MCP agent processes).
+
+- **Claude Code:** `claude mcp add brave-bridge -- npx -y anievo-brave-bridge mcp`
+- **Antigravity:** `~/.gemini/config/mcp_config.json` (or install as an all-in-one plugin above)
+- **Cursor / Windsurf / Cline / DeepSeek Harness:** paste `mcpServers` into your MCP config
 - **Gemini CLI:** `~/.gemini/settings.json` → `mcpServers`
 
 | Category | MCP Tools |
@@ -115,7 +120,7 @@ node brave-bridge.mjs <command> [args] [--flags]
 | **Interact** | `click [--double] [--button right]`, `dblclick`, `rightclick`, `drag <from> <to>`, `hover`, `focus [--clear]`, `fill`, `type`, `select`, `check`, `uncheck`, `key <Combo> [sel]`, `scroll`, `upload <sel> <file…>`, `dialog once-accept\|accept\|dismiss\|off\|status [prompt]` |
 | **State & Emulate** | `cookies [list \| set <k> <v> [--http-only] \| delete <k> \| clear]`, `storage [list \| get <k> \| set <k> <v> \| remove <k> \| clear] [--session-storage]`, `emulate iphone\|pixel\|ipad\|desktop\|reset [--color-scheme dark\|light]` |
 | **Wait & Media** | `wait <ms>`, `waitFor <sel> [--gone]`, `waitFor --text "…"`, `waitUrl <substr\|/regex/>`, `shot [--selector sel] [--full] [--jpeg] [--out file]`, `pdf [--landscape] [--out file.pdf]` |
-| **Debug & Ops** | `capture start\|stop\|status`, `console [--level error] [--last N] [--clear]`, `net [--filter s] [--failed] [--body <id>]`, `reload-ext`, `install-autostart`, `uninstall-autostart` |
+| **Debug & Ops** | `serve`, `mcp [--auto-session]`, `mcp-config`, `extension-path`, `capture start\|stop\|status`, `console [--level error]`, `net [--filter s] [--failed] [--body <id>]`, `reload-ext`, `install-autostart`, `uninstall-autostart` |
 
 **Selectors:** Standard CSS (automatically pierces open Shadow DOM), `@N` refs from `snapshot`, `text=Save`, explicit shadow piercing `my-card >>> button`, and `--frame all|N` for iframes.
 

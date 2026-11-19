@@ -1,7 +1,7 @@
 {
   "name": "anievo-brave-bridge",
   "displayName": "AniEvo Brave Bridge",
-  "version": "2.6.5",
+  "version": "2.6.6",
   "description": "Control your running Brave or Chromium browser without closing or relaunching — 33 MCP tools, background tab group isolation, shadow DOM/iframe piercing, and user tab guard.",
   "logo": "brave-extension/icons/icon128.png",
   "author": {

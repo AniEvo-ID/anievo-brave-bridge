@@ -25,8 +25,10 @@ Dibuat buat **AI coding agent** (Antigravity, Claude Code, Gemini CLI, dll.) sup
 
 ```mermaid
 flowchart LR
-    CLI["CLI / AI agent"] -- "HTTP + X-Bridge-Token" --> S["brave-bridge.mjs serve<br/>127.0.0.1:8787"]
-    S -- "WebSocket /ws<br/>(Origin chrome-extension://id)" --> E["Extension MV3<br/>service worker"]
+    MCP["AI Agent (MCP Client)"] -- "stdio JSON-RPC<br/>(33 browser_* tools)" --> M["brave-bridge mcp"]
+    M -- "HTTP + X-Bridge-Token<br/>(auto-start serve)" --> S["brave-bridge.mjs serve<br/>127.0.0.1:8787"]
+    CLI["CLI / Shell Agent"] -- "HTTP + X-Bridge-Token" --> S
+    S -- "WebSocket /ws<br/>(Pinned chrome-extension://id)" --> E["Extension MV3<br/>service worker"]
     E -- "chrome.tabs / scripting / debugger" --> B["Brave yang lagi jalan"]
 ```
 
@@ -71,7 +73,70 @@ cd ~/.brave-bridge
 
 ---
 
-## Pemakaian
+## MCP Server (33 Tool `browser_*`) & Integrasi AI Agent
+
+AniEvo Brave Bridge sudah membawa **MCP Server stdio zero-dependency** bawaan (**33 tool `browser_*`**) sehingga AI agent (Antigravity, Claude Code, Cursor, Windsurf, Cline, DeepSeek, Gemini CLI) bisa mengontrol Brave secara native tanpa lewat shell. Kalau server bridge lokal belum jalan, proses MCP **otomatis menyalakannya di background**.
+
+> 💡 **Tips cepat:** Klik icon **AniEvo Brave Bridge** di toolbar Brave → klik tombol **Copy MCP Config (JSON)**, atau jalankan `node brave-bridge.mjs mcp-config`.
+
+### 1. Pasang via `npx` (Tanpa Clone Manual)
+
+Tambahkan ke konfigurasi MCP client lu (`mcp_config.json` / `claude_desktop_config.json` / `.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "brave-bridge": {
+      "command": "npx",
+      "args": ["-y", "anievo-brave-bridge", "mcp"]
+    }
+  }
+}
+```
+
+### 2. Pasang dari Clone Lokal (`~/.brave-bridge`)
+
+```json
+{
+  "mcpServers": {
+    "brave-bridge": {
+      "command": "node",
+      "args": ["C:\\Users\\<User>\\.brave-bridge\\brave-bridge.mjs", "mcp"]
+    }
+  }
+}
+```
+
+### 3. Shortcut per Platform AI Agent
+
+- **Google Antigravity (Plugin All-in-One — MCP + Skill + Rules):**
+  ```bash
+  git clone https://github.com/AniEvo-ID/anievo-brave-bridge.git ~/.gemini/config/plugins/anievo-brave-bridge
+  ```
+- **Claude Code:**
+  ```bash
+  claude mcp add brave-bridge -- npx -y anievo-brave-bridge mcp
+  ```
+- **Cursor / Windsurf / Cline / Roo / DeepSeek Harness:** tempel JSON `mcpServers` di atas ke pengaturan MCP.
+- **Gemini CLI:** tempel blok `mcpServers` di atas ke `~/.gemini/settings.json`.
+
+*(Untuk multi-terminal / multi-agent paralel di mana tiap proses MCP butuh tab group terpisah otomatis, tambahkan `"--auto-session"` di akhir `args`).*
+
+### Daftar Lengkap 33 Tool MCP
+
+| Grup | Tool MCP |
+|---|---|
+| **Tab & Sesi (6)** | `browser_status`, `browser_tabs` (`group`/`session`/`allSessions`), `browser_open` (`url`, `session`), `browser_navigate` (`url`/`back`/`forward`/`reload`), `browser_close_tab`, `browser_close_group` |
+| **Inspeksi DOM (6)** | `browser_snapshot` (menghasilkan ref `@1`, `@2`, …), `browser_text`, `browser_html`, `browser_links`, `browser_forms` (password disensor), `browser_frames` |
+| **Interaksi & JS (12)** | `browser_click` (left/right/double + `trusted`), `browser_drag`, `browser_fill` (React & contentEditable aman), `browser_type`, `browser_select`, `browser_check`, `browser_press_key`, `browser_hover`, `browser_scroll`, `browser_upload`, `browser_dialog` (anti-freeze `alert`/`confirm`/`prompt`), `browser_eval` (`await` + auto-bypass CSP) |
+| **State & Emulasi (3)** | `browser_cookies` (termasuk `HttpOnly`, dibatasi ke origin tab agent), `browser_storage` (`local`/`session`), `browser_emulate` (`iphone`/`pixel`/`ipad`/`desktop`/`reset` + `dark`/`light`) |
+| **Visual & Debug (6)** | `browser_wait_for` (selector / teks / regex URL / `gone`), `browser_screenshot` (kirim gambar langsung ke model), `browser_pdf` (vektor PDF), `browser_capture` (`start`/`stop`), `browser_console`, `browser_network` (termasuk `responseBodyOf`) |
+
+Alur standar agent: `browser_open` → `browser_snapshot` → interaksi pakai ref `@N` → `browser_screenshot` → `browser_close_group`.
+
+---
+
+## Pemakaian CLI (Standalone / Fallback Non-MCP)
 
 ```bash
 node brave-bridge.mjs <command> [args] [--flags]
@@ -102,7 +167,7 @@ node brave-bridge.mjs close-group                      # tutup semua tab group "
 | **Tunggu** | `wait <ms>`, `waitFor <sel> [--gone]`, `waitFor --text "…"`, `waitUrl <substr\|/regex/>` |
 | **Screenshot, PDF & Emulasi** | `shot [--selector sel] [--full] [--jpeg] [--quality 80] [--out file]`, `pdf [--landscape] [--no-bg] [--out file.pdf]`, `emulate iphone\|pixel\|ipad\|desktop\|reset [--color-scheme dark\|light]` |
 | **Console/Network** | `capture start\|stop\|status`, `console [--level error] [--last N] [--clear] [--all]`, `net [--filter s] [--failed] [--body <id>]` |
-| **Maintenance** | `reload-ext`, `install-autostart`, `uninstall-autostart`, `help` |
+| **Maintenance & MCP** | `serve`, `mcp [--auto-session]`, `mcp-config`, `extension-path`, `reload-ext`, `install-autostart`, `uninstall-autostart`, `help` |
 
 **Flag global:** `--tabId N`, `--session <id>`, `--timeout ms`, `--json`, `--frame N|all`, `--force`, `--no-group`, `--foreground`, `--activate`, `--all-sessions`
 
@@ -199,58 +264,6 @@ Environment variable: `BRAVE_BRIDGE_PORT` (default `8787`), `BRAVE_BRIDGE_TIMEOU
 - `shot` di tab aktif pakai `captureVisibleTab` (tanpa debugger). Di tab background dan `--full` pakai CDP, jadi bar "debugging" sempat muncul sebentar.
 - `--cdp click` belum mendukung elemen di dalam iframe.
 - Kalau DevTools lagi kebuka di tab yang sama, attach debugger bisa gagal.
-
----
-
-## Integrasi dengan AI agent
-
-### Opsi A — Antigravity Plugin (1 Langkah buat Tim)
-
-Repo ini sudah berformat **Antigravity Plugin** (`plugin.json` + `mcp_config.json` + `skills/` + `rules/`). Clone langsung ke folder plugin global supaya MCP server, skill `brave-bridge`, dan aturan guard otomatis aktif jadi satu paket:
-
-```bash
-git clone https://github.com/AniEvo-ID/anievo-brave-bridge.git ~/.gemini/config/plugins/anievo-brave-bridge
-```
-
-### Opsi B — MCP server standalone (Claude Code / Gemini CLI / Cursor)
-
-`mcp.mjs` adalah MCP server (stdio, tanpa dependency) yang nyediain **33 tool** `browser_*`. Dengan ini agent manggil tool langsung, nggak perlu lewat shell. Kalau server bridge belum jalan, MCP bakal **nyalain sendiri**.
-
-```json
-{
-  "mcpServers": {
-    "brave-bridge": {
-      "command": "node",
-      "args": ["/path/to/anievo-brave-bridge/mcp.mjs"]
-    }
-  }
-}
-```
-
-Atau langsung lewat `npx` tanpa clone manual: `"command": "npx", "args": ["-y", "-p", "anievo-brave-bridge", "brave-bridge-mcp"]`.
-
-Taruh di config MCP client lu (Antigravity: `~/.gemini/config/mcp_config.json`; Claude Code: `claude mcp add brave-bridge -- node /path/to/mcp.mjs`; Gemini CLI: `settings.json` → `mcpServers`).
-
-| Grup | Tool |
-|---|---|
-| Tab | `browser_open`, `browser_navigate`, `browser_tabs`, `browser_close_tab`, `browser_close_group` |
-| Baca | `browser_snapshot`, `browser_text`, `browser_html`, `browser_links`, `browser_forms`, `browser_frames` |
-| Aksi | `browser_click` (left/right/double), `browser_drag`, `browser_fill`, `browser_type`, `browser_select`, `browser_check`, `browser_press_key`, `browser_hover`, `browser_scroll`, `browser_upload`, `browser_dialog`, `browser_eval` |
-| State & Emulasi | `browser_cookies` (termasuk `HttpOnly`), `browser_storage` (`localStorage` / `sessionStorage`), `browser_emulate` (`iphone`/`pixel`/`ipad`/`desktop` + dark/light) |
-| Tunggu/visual | `browser_wait_for`, `browser_screenshot` (balikin gambar langsung ke agent), `browser_pdf` |
-| Debug | `browser_capture`, `browser_console`, `browser_network`, `browser_status` |
-
-Alur yang disarankan: `browser_open` → `browser_snapshot` → aksi pakai ref `@N` → `browser_screenshot` → `browser_close_group`.
-
-### Opsi C — CLI lewat rules
-
-Tambahkan instruksi berikut ke rules agent lu (mis. `AGENTS.md` / `GEMINI.md` / `CLAUDE.md`):
-
-```markdown
-Kalau user minta akses browser Brave: cek `curl -s http://127.0.0.1:8787/health` ("ext": true),
-lalu pakai `node <path>/brave-bridge.mjs <command>`. Selalu buka tab baru (`new <url>`), kerja
-pakai `--tabId`, mulai dari `snapshot`, dan tutup dengan `close-group` setelah selesai.
-```
 
 ---
 

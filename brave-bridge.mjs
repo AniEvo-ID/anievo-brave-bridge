@@ -23,7 +23,7 @@ import { cpSync, existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync 
 import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "2.6.5";
+const VERSION = "2.6.6";
 const PROTOCOL = 2;
 const HOST = "127.0.0.1";
 const PORT = Number(process.env.BRAVE_BRIDGE_PORT || 8787);
