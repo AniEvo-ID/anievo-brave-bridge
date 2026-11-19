@@ -9,6 +9,7 @@ Dibuat buat **AI coding agent** (Antigravity, Claude Code, Gemini CLI, dll.) sup
 - 🗂️ Tab buatan agent otomatis masuk tab group sendiri, dan tab milik user dilindungi guard
 - 🫥 **Nggak nyolong fokus**: tab agent dibuka dan dikerjain di background (klik, isi form, input trusted, screenshot), jadi lu tetap stay di tab lu
 - 🛠️ Mode CDP opsional via `chrome.debugger` (tetap tanpa relaunch)
+- 🤖 **MCP server** bawaan: 27 tool `browser_*` siap dicolok ke Antigravity / Claude Code / Gemini CLI
 
 ---
 
@@ -46,6 +47,7 @@ cd anievo-brave-bridge
    ```bash
    node brave-bridge.mjs install-autostart   # hapus: uninstall-autostart
    ```
+   Log server ditulis ke `server.log`.
 
 > [!NOTE]
 > Waktu extension pertama kali konek, ID-nya otomatis **di-pin** di `config.json`. Kalau lu pindah folder extension (ID-nya jadi beda), jalankan `serve --reset-ext`.
@@ -169,6 +171,35 @@ Environment variable: `BRAVE_BRIDGE_PORT` (default `8787`), `BRAVE_BRIDGE_TIMEOU
 ---
 
 ## Integrasi dengan AI agent
+
+### Opsi A — MCP server (direkomendasikan)
+
+`mcp.mjs` adalah MCP server (stdio, tanpa dependency) yang nyediain **27 tool** `browser_*`. Dengan ini agent manggil tool langsung, nggak perlu lewat shell. Kalau server bridge belum jalan, MCP bakal **nyalain sendiri**.
+
+```json
+{
+  "mcpServers": {
+    "brave-bridge": {
+      "command": "node",
+      "args": ["/path/to/anievo-brave-bridge/mcp.mjs"]
+    }
+  }
+}
+```
+
+Taruh di config MCP client lu (Antigravity: `~/.gemini/config/mcp_config.json`; Claude Code: `claude mcp add brave-bridge -- node /path/to/mcp.mjs`; Gemini CLI: `settings.json` → `mcpServers`).
+
+| Grup | Tool |
+|---|---|
+| Tab | `browser_open`, `browser_navigate`, `browser_tabs`, `browser_close_tab`, `browser_close_group` |
+| Baca | `browser_snapshot`, `browser_text`, `browser_html`, `browser_links`, `browser_forms`, `browser_frames` |
+| Aksi | `browser_click`, `browser_fill`, `browser_type`, `browser_select`, `browser_check`, `browser_press_key`, `browser_hover`, `browser_scroll`, `browser_upload`, `browser_eval` |
+| Tunggu/visual | `browser_wait_for`, `browser_screenshot` (balikin gambar langsung ke agent) |
+| Debug | `browser_capture`, `browser_console`, `browser_network`, `browser_status` |
+
+Alur yang disarankan: `browser_open` → `browser_snapshot` → aksi pakai ref `@N` → `browser_screenshot` → `browser_close_group`.
+
+### Opsi B — CLI lewat rules
 
 Tambahkan instruksi berikut ke rules agent lu (mis. `AGENTS.md` / `GEMINI.md` / `CLAUDE.md`):
 
