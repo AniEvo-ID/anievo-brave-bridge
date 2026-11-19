@@ -18,8 +18,33 @@ const GROUP_COLORS = ["grey", "blue", "red", "yellow", "green", "pink", "purple"
 const MUTATING = new Set([
     "goto", "reload", "back", "forward", "close", "click", "dblclick", "rightclick", "drag",
     "hover", "fill", "type", "select", "check", "uncheck", "key", "scroll", "eval", "upload",
-    "focus", "dialog", "cookies", "storage",
+    "focus", "dialog", "cookies", "storage", "emulate",
 ]);
+
+const DEVICES = {
+    iphone: {
+        width: 390,
+        height: 844,
+        dpr: 3,
+        mobile: true,
+        ua: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
+    },
+    pixel: {
+        width: 412,
+        height: 915,
+        dpr: 2.625,
+        mobile: true,
+        ua: "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36",
+    },
+    ipad: {
+        width: 820,
+        height: 1180,
+        dpr: 2,
+        mobile: true,
+        ua: "Mozilla/5.0 (iPad; CPU OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
+    },
+    desktop: { width: 1440, height: 900, dpr: 1, mobile: false, ua: "" },
+};
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const truthy = (v) => v === true || v === "true" || v === "1" || v === 1;
@@ -181,7 +206,7 @@ async function attach(tabId) {
     } catch (e) {
         throw bad(`Gagal attach debugger ke tab ${tabId}: ${e.message}. (DevTools sedang terbuka di tab itu?)`);
     }
-    const s = { persistent: false, dialogMode: null, dialogPrompt: undefined, dialogs: [], console: [], net: new Map() };
+    const s = { persistent: false, emulating: false, dialogMode: null, dialogPrompt: undefined, dialogs: [], console: [], net: new Map() };
     dbg.set(tabId, s);
     return s;
 }
@@ -191,6 +216,8 @@ async function detach(tabId) {
     await chrome.debugger.detach({ tabId }).catch(() => { });
 }
 
+const keepDebugger = (s) => !!(s && (s.persistent || s.dialogMode || s.emulating));
+
 async function withDebugger(tabId, fn) {
     const had = dbg.has(tabId);
     await attach(tabId);
@@ -199,7 +226,7 @@ async function withDebugger(tabId, fn) {
         return await fn(send);
     } finally {
         const s = dbg.get(tabId);
-        if (!had && s && !s.persistent && !s.dialogMode) await detach(tabId);
+        if (!had && !keepDebugger(s)) await detach(tabId);
     }
 }
 
@@ -230,7 +257,7 @@ chrome.debugger.onEvent.addListener((src, method, p) => {
                     ...(promptText !== undefined ? { promptText: String(promptText) } : {}),
                 })
                 .then(() => {
-                    if (once && !s.persistent) detach(src.tabId);
+                    if (once && !keepDebugger(s)) detach(src.tabId);
                 })
                 .catch(() => { });
         }
@@ -950,7 +977,7 @@ async function handle(cmd, params = {}) {
                 if (s) {
                     s.dialogMode = null;
                     s.dialogPrompt = undefined;
-                    if (!s.persistent) await detach(id);
+                    if (!keepDebugger(s)) await detach(id);
                 }
                 return { ok: true, tabId: id, mode: null };
             }
@@ -1030,6 +1057,57 @@ async function handle(cmd, params = {}) {
                 return dom(id, flags, "storage", { area, action: sub, key: args[1], value: args[2] });
             }
             throw bad("Pakai: storage [list|get <k>|set <k> <v>|remove <k>|clear] [--session-storage]");
+        }
+
+        case "emulate": {
+            const presetName = String(args[0] || "").toLowerCase();
+            const id = await target();
+            const scheme = flags["color-scheme"] || flags.colorScheme;
+            if (presetName === "reset" || presetName === "off") {
+                const s = dbg.get(id);
+                if (s) {
+                    const send = (m, p) => chrome.debugger.sendCommand({ tabId: id }, m, p || {}).catch(() => { });
+                    await send("Emulation.clearDeviceMetricsOverride");
+                    await send("Emulation.setTouchEmulationEnabled", { enabled: false });
+                    await send("Emulation.setEmulatedMedia", { features: [] });
+                    await send("Emulation.setUserAgentOverride", { userAgent: "" });
+                    s.emulating = false;
+                    if (!keepDebugger(s)) await detach(id);
+                }
+                return { ok: true, tabId: id, emulating: false };
+            }
+            const preset = presetName ? DEVICES[presetName] : null;
+            if (presetName && !preset) {
+                throw bad(`Preset tidak dikenal: ${presetName}. Pakai: iphone | pixel | ipad | desktop | reset (atau --width W --height H).`);
+            }
+            const width = Number(flags.width || (preset && preset.width) || 0);
+            const height = Number(flags.height || (preset && preset.height) || 0);
+            const dpr = Number(flags.dpr || (preset && preset.dpr) || 1);
+            const mobile = flags.mobile !== undefined ? truthy(flags.mobile) : !!(preset && preset.mobile);
+            const ua = typeof flags.ua === "string" ? flags.ua : preset ? preset.ua : undefined;
+            if ((!width || !height) && !scheme) {
+                throw bad("Pakai: emulate iphone|pixel|ipad|desktop|reset, atau --width W --height H, atau --color-scheme dark|light.");
+            }
+            const s = await attach(id);
+            s.emulating = true;
+            const send = (m, p) => chrome.debugger.sendCommand({ tabId: id }, m, p || {});
+            if (width && height) {
+                // dontSetVisibleSize: true menjaga ukuran Aura view asli tab background tidak ketimpa 390x844,
+                // jadi begitu `emulate reset` detach debugger, innerWidth langsung balik ke ukuran desktop asli.
+                await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: dpr, mobile, dontSetVisibleSize: true });
+                await send("Emulation.setTouchEmulationEnabled", { enabled: mobile });
+            }
+            if (ua !== undefined) await send("Emulation.setUserAgentOverride", { userAgent: ua });
+            if (typeof scheme === "string" && scheme) {
+                await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: scheme }] });
+            }
+            return {
+                ok: true,
+                tabId: id,
+                preset: presetName || "custom",
+                viewport: width && height ? { width, height, dpr, mobile } : null,
+                colorScheme: typeof scheme === "string" ? scheme : null,
+            };
         }
 
         case "upload": {

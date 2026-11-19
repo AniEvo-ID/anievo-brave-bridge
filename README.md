@@ -4,6 +4,8 @@
 [![Release](https://img.shields.io/github/v/release/AniEvo-ID/anievo-brave-bridge)](https://github.com/AniEvo-ID/anievo-brave-bridge/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
+> **Bahasa:** **Bahasa Indonesia** | [English](README.en.md)
+
 Kontrol browser **Brave (atau Chromium apa pun)** yang **lagi jalan**, tanpa perlu close atau relaunch pakai `--remote-debugging-port`. Sesi login, cookie, dan tab lu tetap utuh.
 
 Dibuat buat **AI coding agent** (Antigravity, Claude Code, Gemini CLI, dll.) supaya bisa buka halaman, baca DOM, klik, isi form, screenshot, sampai capture console/network di browser asli lu, cukup lewat satu CLI.
@@ -13,7 +15,7 @@ Dibuat buat **AI coding agent** (Antigravity, Claude Code, Gemini CLI, dll.) sup
 - 🗂️ Tab buatan agent otomatis masuk tab group sendiri (mendukung **isolasi tab group per sesi** untuk multi-agent paralel), dan tab milik user dilindungi guard
 - 🫥 **Nggak nyolong fokus**: tab agent dibuka dan dikerjain di background (klik, isi form, input trusted, screenshot), jadi lu tetap stay di tab lu
 - 🛠️ Mode CDP opsional via `chrome.debugger` (tetap tanpa relaunch)
-- 🤖 **MCP server** bawaan: 32 tool `browser_*` siap dicolok ke Antigravity / Claude Code / Gemini CLI
+- 🤖 **MCP server & Antigravity Plugin** bawaan: 33 tool `browser_*` + `plugin.json` siap pasang di Antigravity / Claude Code / Gemini CLI
 - 🎛️ **Popup UI di toolbar Brave**: lihat status koneksi live, daftar tab group agent aktif, dan tombol *Close All Agent Tabs* sekali klik
 
 ---
@@ -88,7 +90,7 @@ node brave-bridge.mjs close-group                      # tutup semua tab group "
 | **Interaksi** | `click [--double] [--button right]`, `dblclick`, `rightclick`, `drag <asal> <tujuan>`, `hover`, `focus [--clear]`, `fill`, `type`, `select`, `check`, `uncheck`, `key <Combo> [sel]`, `scroll [top\|bottom\|+N\|-N\|sel]`, `upload <sel> <file…>`, `dialog accept\|dismiss\|once-accept\|auto-accept\|off\|status` |
 | **Cookies/Storage** | `cookies [list \| set <k> <v> [--http-only] \| delete <k> \| clear]`, `storage [list \| get <k> \| set <k> <v> \| remove <k> \| clear] [--session-storage]` |
 | **Tunggu** | `wait <ms>`, `waitFor <sel> [--gone]`, `waitFor --text "…"`, `waitUrl <substr\|/regex/>` |
-| **Screenshot & PDF** | `shot [--selector sel] [--full] [--jpeg] [--quality 80] [--out file]`, `pdf [--landscape] [--no-bg] [--out file.pdf]` |
+| **Screenshot, PDF & Emulasi** | `shot [--selector sel] [--full] [--jpeg] [--quality 80] [--out file]`, `pdf [--landscape] [--no-bg] [--out file.pdf]`, `emulate iphone\|pixel\|ipad\|desktop\|reset [--color-scheme dark\|light]` |
 | **Console/Network** | `capture start\|stop\|status`, `console [--level error] [--last N] [--clear] [--all]`, `net [--filter s] [--failed] [--body <id>]` |
 | **Maintenance** | `reload-ext`, `install-autostart`, `uninstall-autostart`, `help` |
 
@@ -192,9 +194,17 @@ Environment variable: `BRAVE_BRIDGE_PORT` (default `8787`), `BRAVE_BRIDGE_TIMEOU
 
 ## Integrasi dengan AI agent
 
-### Opsi A — MCP server (direkomendasikan)
+### Opsi A — Antigravity Plugin (1 Langkah buat Tim)
 
-`mcp.mjs` adalah MCP server (stdio, tanpa dependency) yang nyediain **32 tool** `browser_*`. Dengan ini agent manggil tool langsung, nggak perlu lewat shell. Kalau server bridge belum jalan, MCP bakal **nyalain sendiri**.
+Repo ini sudah berformat **Antigravity Plugin** (`plugin.json` + `mcp_config.json` + `skills/` + `rules/`). Clone langsung ke folder plugin global supaya MCP server, skill `brave-bridge`, dan aturan guard otomatis aktif jadi satu paket:
+
+```bash
+git clone https://github.com/AniEvo-ID/anievo-brave-bridge.git ~/.gemini/config/plugins/anievo-brave-bridge
+```
+
+### Opsi B — MCP server standalone (Claude Code / Gemini CLI / Cursor)
+
+`mcp.mjs` adalah MCP server (stdio, tanpa dependency) yang nyediain **33 tool** `browser_*`. Dengan ini agent manggil tool langsung, nggak perlu lewat shell. Kalau server bridge belum jalan, MCP bakal **nyalain sendiri**.
 
 ```json
 {
@@ -216,13 +226,13 @@ Taruh di config MCP client lu (Antigravity: `~/.gemini/config/mcp_config.json`; 
 | Tab | `browser_open`, `browser_navigate`, `browser_tabs`, `browser_close_tab`, `browser_close_group` |
 | Baca | `browser_snapshot`, `browser_text`, `browser_html`, `browser_links`, `browser_forms`, `browser_frames` |
 | Aksi | `browser_click` (left/right/double), `browser_drag`, `browser_fill`, `browser_type`, `browser_select`, `browser_check`, `browser_press_key`, `browser_hover`, `browser_scroll`, `browser_upload`, `browser_dialog`, `browser_eval` |
-| State | `browser_cookies` (termasuk `HttpOnly`), `browser_storage` (`localStorage` / `sessionStorage`) |
+| State & Emulasi | `browser_cookies` (termasuk `HttpOnly`), `browser_storage` (`localStorage` / `sessionStorage`), `browser_emulate` (`iphone`/`pixel`/`ipad`/`desktop` + dark/light) |
 | Tunggu/visual | `browser_wait_for`, `browser_screenshot` (balikin gambar langsung ke agent), `browser_pdf` |
 | Debug | `browser_capture`, `browser_console`, `browser_network`, `browser_status` |
 
 Alur yang disarankan: `browser_open` → `browser_snapshot` → aksi pakai ref `@N` → `browser_screenshot` → `browser_close_group`.
 
-### Opsi B — CLI lewat rules
+### Opsi C — CLI lewat rules
 
 Tambahkan instruksi berikut ke rules agent lu (mis. `AGENTS.md` / `GEMINI.md` / `CLAUDE.md`):
 

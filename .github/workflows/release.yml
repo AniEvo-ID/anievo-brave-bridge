@@ -48,7 +48,8 @@ jobs:
           cp brave-extension/icons/*.png dist/ext/brave-extension/icons/
 
           cp -r dist/ext/brave-extension/* dist/full/anievo-brave-bridge/brave-extension/
-          cp brave-bridge.mjs mcp.mjs package.json README.md LICENSE dist/full/anievo-brave-bridge/
+          cp -r rules skills dist/full/anievo-brave-bridge/
+          cp brave-bridge.mjs mcp.mjs plugin.json mcp_config.json package.json README.md README.en.md LICENSE dist/full/anievo-brave-bridge/
 
           (cd dist/ext && zip -qr "../anievo-brave-bridge-extension-${TAG}.zip" brave-extension)
           (cd dist/full && zip -qr "../anievo-brave-bridge-${TAG}.zip" anievo-brave-bridge)

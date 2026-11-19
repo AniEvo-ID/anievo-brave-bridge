@@ -46,7 +46,7 @@ function findBrowser() {
 }
 
 function createFixtureServer(bridgePort) {
-    const html = `<!doctype html><html><head><meta charset="utf-8"><title>BB Fixture</title>
+    const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>BB Fixture</title>
 <style>body{font-family:sans-serif;padding:16px} .tall{height:2000px} #menu{display:none;padding:4px;border:1px solid #888}</style>
 </head><body>
 <h1 id="title">Brave Bridge Fixture</h1>
@@ -418,6 +418,20 @@ test("AniEvo Brave Bridge — security, CLI + extension E2E, session groups, and
         assert.equal(pdfRes.code, 0);
         assert.equal(readFileSync(pdfOut).subarray(0, 5).toString("ascii"), "%PDF-");
 
+        // v2.6: responsive mobile + prefers-color-scheme emulation & reset.
+        const origW = JSON.parse((await cli(["eval", "innerWidth", "--tabId", tab])).out);
+        await cli(["emulate", "iphone", "--color-scheme", "dark", "--tabId", tab]);
+        const emuState = JSON.parse(
+            (await cli(["eval", "({ w: innerWidth, dark: matchMedia('(prefers-color-scheme: dark)').matches, ua: navigator.userAgent })", "--tabId", tab])).out
+        );
+        assert.equal(emuState.w, 390);
+        assert.equal(emuState.dark, true);
+        assert.match(emuState.ua, /iPhone/);
+        await cli(["emulate", "reset", "--tabId", tab]);
+        const resetState = JSON.parse((await cli(["eval", "({ w: innerWidth, ua: navigator.userAgent })", "--tabId", tab])).out);
+        assert.equal(resetState.w, origW);
+        assert.doesNotMatch(resetState.ua, /iPhone/);
+
         // Strict CSP fallback via CDP Runtime.evaluate.
         const cspTab = String(JSON.parse((await cli(["new", `${fixture.url}/csp`, "--json"])).out).tabId);
         assert.equal((await cli(["eval", "window.secret", "--tabId", cspTab])).out, "csp-ok");
@@ -465,9 +479,10 @@ test("AniEvo Brave Bridge — security, CLI + extension E2E, session groups, and
         assert.equal(userStillAlive, true);
     });
 
-    // --------------------------------------------------------- 3. MCP stdio server
-    await t.test("MCP server end-to-end", async () => {
-        const p = spawn(process.execPath, [MCP], { env, stdio: ["pipe", "pipe", "ignore"] });
+    // --------------------------------------------------------- 3. MCP stdio server (via plugin mcp_config.json bootstrapper)
+    await t.test("MCP server & plugin mcp_config.json end-to-end", async () => {
+        const pluginMcp = JSON.parse(readFileSync(path.join(ROOT, "mcp_config.json"), "utf8")).mcpServers["anievo-brave-bridge"];
+        const p = spawn(process.execPath, pluginMcp.args, { cwd: ROOT, env, stdio: ["pipe", "pipe", "ignore"] });
         t.after(() => !p.killed && p.kill());
         let buf = "";
         const pending = new Map();
@@ -496,7 +511,7 @@ test("AniEvo Brave Bridge — security, CLI + extension E2E, session groups, and
         p.stdin.write('{"jsonrpc":"2.0","method":"notifications/initialized"}\n');
 
         const tools = (await rpc("tools/list", {})).result.tools;
-        assert.equal(tools.length, 32);
+        assert.equal(tools.length, 33);
 
         const opened = JSON.parse((await call("browser_open", { url: `${fixture.url}/`, session: "mcp1" })).content[0].text);
         assert.equal(opened.group, "Antigravity-mcp1");
