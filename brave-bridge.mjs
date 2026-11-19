@@ -1,53 +1,78 @@
 #!/usr/bin/env node
 /**
- * brave-bridge.mjs — Kontrol Brave yang SEDANG JALAN (tanpa close/relaunch), ala Claude in Chrome.
+ * brave-bridge.mjs v2 — kontrol Brave yang SEDANG JALAN (tanpa close/relaunch).
  *
- * Arsitektur (extension bridge):
- *   Brave (extension "AniEvo Brave Bridge") --long-poll--> server lokal ini
- *   CLI (file ini)  --HTTP-->  server  --relay-->  extension  -->  chrome.* API
+ * Arsitektur:
+ *   Extension "AniEvo Brave Bridge" --WebSocket (Origin chrome-extension://<id>)--> server ini
+ *   CLI (file ini) --HTTP + X-Bridge-Token--> server --relay--> extension --> chrome.* API
  *
- * Setup sekali:
- *   1. Jalankan server:  npm run brave:bridge:serve     (atau: node %USERPROFILE%\.brave-bridge\brave-bridge.mjs serve)
- *   2. brave://extensions -> nyalakan Developer mode -> "Load unpacked"
- *      -> pilih folder: %USERPROFILE%\.brave-bridge\brave-extension
- *   Setelah itu Brave TIDAK perlu ditutup lagi.
+ * Keamanan:
+ *   - Server cuma listen di 127.0.0.1, cek Host header (anti DNS-rebinding).
+ *   - /cmd wajib token dari config.json (dibuat otomatis). Website tidak bisa baca token.
+ *   - TIDAK ada header CORS; request dengan Origin http(s) (= website) langsung ditolak.
+ *   - /ws cuma menerima Origin chrome-extension://<id> yang di-pin (trust-on-first-use).
  *
- * Pakai (server harus jalan):
- *   node %USERPROFILE%\.brave-bridge\brave-bridge.mjs status
- *   node %USERPROFILE%\.brave-bridge\brave-bridge.mjs tabs
- *   node %USERPROFILE%\.brave-bridge\brave-bridge.mjs goto http://localhost:4003/login
- *   node %USERPROFILE%\.brave-bridge\brave-bridge.mjs text "h1"
- *   node %USERPROFILE%\.brave-bridge\brave-bridge.mjs fill "input[name=email]" "anievo.id@gmail.com"
- *   node %USERPROFILE%\.brave-bridge\brave-bridge.mjs click "button[type=submit]"
- *   node %USERPROFILE%\.brave-bridge\brave-bridge.mjs shot
- *   node %USERPROFILE%\.brave-bridge\brave-bridge.mjs eval "document.title"
- *   node %USERPROFILE%\.brave-bridge\brave-bridge.mjs close-mine   (tutup tab buatan bridge)
- *
- * Zero dependency: cuma butuh Node >= 18 (fetch global).
+ * Zero dependency, Node >= 18.
  */
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { mkdir, writeFile } from "node:fs/promises";
+import crypto from "node:crypto";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
+import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
-const HOST = process.env.BRAVE_BRIDGE_HOST || "127.0.0.1";
+const VERSION = "2.0.0";
+const PROTOCOL = 2;
+const HOST = "127.0.0.1";
 const PORT = Number(process.env.BRAVE_BRIDGE_PORT || 8787);
-const POLL_MS = 8000; // poll pendek biar service worker extension nggak idle
 const CMD_TIMEOUT = Number(process.env.BRAVE_BRIDGE_TIMEOUT || 45000);
-const ALIVE_MS = 45000; // extension dianggap hidup bila poll terakhir < ini
-const ARTIFACT_DIR =
-    process.env.BRAVE_CDP_ARTIFACTS || path.join(os.homedir(), ".brave-cdp", "artifacts");
+const ARTIFACT_DIR = process.env.BRAVE_CDP_ARTIFACTS || path.join(os.homedir(), ".brave-cdp", "artifacts");
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const EXT_DIR = path.join(__dirname, "brave-extension");
+const CONFIG_PATH = path.join(__dirname, "config.json");
+const LOG_PATH = path.join(__dirname, "server.log");
 
 const EXT_HINT =
-    "Extension belum konek ke bridge. Pastikan: (1) Brave sedang jalan, " +
-    '(2) extension "AniEvo Brave Bridge" ter-load di brave://extensions ' +
-    "(Developer mode -> Load unpacked -> folder tools/brave-extension).";
+    'Extension belum konek. Pastikan Brave jalan dan extension "AniEvo Brave Bridge" enabled di brave://extensions ' +
+    "(kalau baru update file extension: klik Reload di kartu extension-nya).";
+
+// ---------------------------------------------------------------- config
+const DEFAULT_CONFIG = { defaultGroup: "Antigravity", defaultColor: "purple", guard: true, extId: null };
+
+function loadConfig(create = false) {
+    let cfg = {};
+    if (existsSync(CONFIG_PATH)) {
+        try {
+            cfg = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
+        } catch {
+            cfg = {};
+        }
+    }
+    let changed = false;
+    for (const [k, v] of Object.entries(DEFAULT_CONFIG)) {
+        if (!(k in cfg)) {
+            cfg[k] = v;
+            changed = true;
+        }
+    }
+    if (!cfg.token && create) {
+        cfg.token = crypto.randomBytes(24).toString("hex");
+        changed = true;
+    }
+    if (changed && create) saveConfig(cfg);
+    return cfg;
+}
+
+function saveConfig(cfg) {
+    writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
+}
 
 // ---------------------------------------------------------------- arg parsing
+// Flag boolean murni: jangan "makan" argumen positional sesudahnya.
+const BOOL_FLAGS = new Set(["new", "nowait", "background", "hard", "isolated", "cdp", "no-cdp", "append", "force", "clear", "gone",
+    "full", "jpeg", "jpg", "viewport", "no-headings", "failed", "dry-run", "no-group", "json", "verbose", "reset-ext", "help", "all"]);
 const argv = process.argv.slice(2);
 const positional = [];
 const flags = {};
@@ -57,246 +82,350 @@ for (let i = 0; i < argv.length; i++) {
         positional.push(...argv.slice(i + 1));
         break;
     }
-    if (a.startsWith("--")) {
+    if (a.startsWith("--") && a.length > 2) {
         const eq = a.indexOf("=");
-        if (eq !== -1) flags[a.slice(2, eq)] = a.slice(eq + 1);
-        else if (argv[i + 1] && !argv[i + 1].startsWith("--")) flags[a.slice(2)] = argv[++i];
-        else flags[a.slice(2)] = true;
+        const name = eq !== -1 ? a.slice(2, eq) : a.slice(2);
+        if (eq !== -1) flags[name] = a.slice(eq + 1);
+        else if (!BOOL_FLAGS.has(name) && argv[i + 1] !== undefined && !argv[i + 1].startsWith("--")) flags[name] = argv[++i];
+        else flags[name] = true;
     } else {
         positional.push(a);
     }
 }
 const cmd = (positional.shift() || "help").toLowerCase();
 
-// ---------------------------------------------------------------- server mode
-let seq = 0;
+// ---------------------------------------------------------------- minimal WebSocket (RFC 6455)
+function wsAccept(req, socket) {
+    const key = req.headers["sec-websocket-key"];
+    const accept = crypto.createHash("sha1").update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");
+    socket.write(
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" + `Sec-WebSocket-Accept: ${accept}\r\n\r\n`
+    );
+    socket.setNoDelay(true);
 
-function readBody(req) {
-    return new Promise((resolve) => {
-        let data = "";
-        req.on("data", (c) => (data += c));
-        req.on("end", () => {
-            if (!data) return resolve(null);
-            try {
-                resolve(JSON.parse(data));
-            } catch {
-                resolve(null);
+    const conn = { socket, open: true, onmessage: null, onclose: null };
+    let buf = Buffer.alloc(0);
+    let frags = [];
+
+    const frame = (op, payload) => {
+        const len = payload.length;
+        let head;
+        if (len < 126) head = Buffer.from([0x80 | op, len]);
+        else if (len < 65536) {
+            head = Buffer.alloc(4);
+            head[0] = 0x80 | op;
+            head[1] = 126;
+            head.writeUInt16BE(len, 2);
+        } else {
+            head = Buffer.alloc(10);
+            head[0] = 0x80 | op;
+            head[1] = 127;
+            head.writeBigUInt64BE(BigInt(len), 2);
+        }
+        return Buffer.concat([head, payload]);
+    };
+    conn.send = (str) => {
+        if (conn.open) socket.write(frame(0x1, Buffer.from(str)));
+    };
+    conn.close = () => {
+        if (!conn.open) return;
+        conn.open = false;
+        try {
+            socket.end(frame(0x8, Buffer.alloc(0)));
+        } catch {
+            /* ignore */
+        }
+    };
+
+    socket.on("data", (chunk) => {
+        buf = Buffer.concat([buf, chunk]);
+        for (; ;) {
+            if (buf.length < 2) return;
+            const fin = (buf[0] & 0x80) !== 0;
+            const op = buf[0] & 0x0f;
+            const masked = (buf[1] & 0x80) !== 0;
+            let len = buf[1] & 0x7f;
+            let off = 2;
+            if (len === 126) {
+                if (buf.length < 4) return;
+                len = buf.readUInt16BE(2);
+                off = 4;
+            } else if (len === 127) {
+                if (buf.length < 10) return;
+                len = Number(buf.readBigUInt64BE(2));
+                off = 10;
             }
-        });
-        req.on("error", () => resolve(null));
+            const maskOff = off;
+            if (masked) off += 4;
+            if (buf.length < off + len) return;
+            let payload = buf.subarray(off, off + len);
+            if (masked) {
+                const mask = buf.subarray(maskOff, maskOff + 4);
+                payload = Buffer.from(payload);
+                for (let i = 0; i < payload.length; i++) payload[i] ^= mask[i & 3];
+            }
+            buf = buf.subarray(off + len);
+            if (op === 0x8) {
+                conn.close();
+                return;
+            }
+            if (op === 0x9) {
+                socket.write(frame(0xa, payload));
+                continue;
+            }
+            if (op === 0xa) continue;
+            if (op === 0x1 || op === 0x2 || op === 0x0) {
+                frags.push(payload);
+                if (fin) {
+                    const msg = Buffer.concat(frags).toString("utf8");
+                    frags = [];
+                    if (conn.onmessage) conn.onmessage(msg);
+                }
+            }
+        }
     });
+    const closed = () => {
+        if (conn._closedFired) return;
+        conn._closedFired = true;
+        conn.open = false;
+        if (conn.onclose) conn.onclose();
+    };
+    socket.on("close", closed);
+    socket.on("end", closed);
+    socket.on("error", closed);
+    return conn;
 }
 
+// ---------------------------------------------------------------- server mode
 function startServer() {
-    const queue = []; // perintah menunggu diambil extension
-    const polls = []; // long-poll yang menggantung
-    const waiters = new Map(); // id -> { resolve, timer }
-    const mine = new Map(); // tabId -> { id, url, title, at } (tab yang DIBUKA oleh bridge)
-    let lastPollAt = 0;
+    const cfg = loadConfig(true);
+    if (flags["reset-ext"]) {
+        cfg.extId = null;
+        saveConfig(cfg);
+    }
+    const verbose = !!flags.verbose;
+    const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
+    const vlog = (...a) => verbose && log(...a);
 
-    const extAlive = () => Date.now() - lastPollAt < ALIVE_MS;
+    let ext = null; // { conn, version, id, lastSeen }
+    const waiters = new Map(); // jobId -> { resolve, timer }
+    const mine = new Map(); // tabId -> info (tab yang dibuka bridge)
 
-    // Catat tab baru yang dibuat bridge (open / new / goto --new).
-    // goto TANPA --new memakai tab aktif -> JANGAN dicatat (bisa tab milik user).
-    const createsNewTab = (lc, f) => lc === "open" || lc === "new" || (lc === "goto" && (f.new === true || f.new === "true"));
-    function remember(result) {
-        if (!result || typeof result !== "object") return;
-        const raw = result.tabId !== undefined ? result.tabId : result.id;
-        if (raw === undefined || raw === null) return;
-        mine.set(String(raw), {
-            id: Number(raw),
-            url: result.url || "",
-            title: result.title || "",
-            groupId: result.groupId === undefined ? null : result.groupId,
-            at: Date.now(),
+    const extAlive = () => !!(ext && ext.conn.open);
+
+    const okHost = (req) => {
+        const h = String(req.headers.host || "").toLowerCase();
+        return h === `127.0.0.1:${PORT}` || h === `localhost:${PORT}`;
+    };
+    const tokenOk = (req) => {
+        const got = Buffer.from(String(req.headers["x-bridge-token"] || ""));
+        const want = Buffer.from(cfg.token);
+        return got.length === want.length && crypto.timingSafeEqual(got, want);
+    };
+    const extOrigin = (origin) => {
+        const m = /^chrome-extension:\/\/([a-p]{32})$/.exec(String(origin || ""));
+        return m ? m[1] : null;
+    };
+
+    function waitExt(ms) {
+        return new Promise((resolve) => {
+            const t0 = Date.now();
+            const tick = () => {
+                if (extAlive()) return resolve(true);
+                if (Date.now() - t0 > ms) return resolve(false);
+                setTimeout(tick, 150);
+            };
+            tick();
         });
     }
-    const forget = (id) => mine.delete(String(id));
 
-    // Kirim satu job ke extension lewat poll/queue yang sudah ada.
     function relay(c, args, f, timeout) {
-        const id = ++seq;
-        const job = { id, cmd: c, params: { args, flags: f } };
+        const id = crypto.randomUUID();
         const wait = Number(timeout || f.timeout || CMD_TIMEOUT);
+        const job = { type: "job", id, cmd: c, params: { args, flags: f }, expiresAt: Date.now() + wait };
         return new Promise((resolve) => {
             const timer = setTimeout(() => {
                 waiters.delete(id);
-                resolve({ ok: false, error: `Timeout ${wait}ms nunggu extension (tab sibuk / halaman chrome:// ?)` });
-            }, wait);
+                resolve({ ok: false, error: `Timeout ${wait}ms nunggu extension (halaman berat / dialog alert terbuka?)` });
+            }, wait + 1000);
             waiters.set(id, { resolve, timer });
-            if (!deliver(job)) queue.push(job);
+            ext.conn.send(JSON.stringify(job));
         });
     }
 
-    const CORS = {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Headers": "content-type",
-        "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-        "Cache-Control": "no-store",
-    };
     const send = (res, code, obj) => {
         const body = JSON.stringify(obj);
-        res.writeHead(code, {
-            "Content-Type": "application/json; charset=utf-8",
-            "Content-Length": Buffer.byteLength(body),
-            ...CORS,
-        });
+        res.writeHead(code, { "Content-Type": "application/json; charset=utf-8", "Content-Length": Buffer.byteLength(body), "Cache-Control": "no-store" });
         res.end(body);
     };
 
-    // Serahkan job ke poll yang menggantung; kalau tidak ada, taruh di queue.
-    function deliver(job) {
-        const p = polls.shift();
-        if (p) {
-            clearTimeout(p.timer);
-            p.resolve(job);
-            return true;
-        }
-        return false;
-    }
-
     const server = http.createServer(async (req, res) => {
         const url = new URL(req.url, `http://${HOST}:${PORT}`);
-        console.log(`[req] ${req.method} ${url.pathname} from ${req.socket.remoteAddress}:${req.socket.remotePort}`);
+        vlog(`[req] ${req.method} ${url.pathname}`);
 
-        if (req.method === "OPTIONS") {
-            res.writeHead(204, CORS);
-            return res.end();
-        }
+        if (!okHost(req)) return send(res, 403, { ok: false, error: "host ditolak" });
+        // Request dari website (Origin http/https/null) selalu ditolak. Tidak ada CORS sama sekali.
+        if (req.headers.origin && !extOrigin(req.headers.origin)) return send(res, 403, { ok: false, error: "origin ditolak" });
 
         if (url.pathname === "/health") {
             return send(res, 200, {
                 ok: true,
                 ext: extAlive(),
-                lastPollAgoMs: lastPollAt ? Date.now() - lastPollAt : null,
-                queued: queue.length,
-                pending: polls.length,
+                extVersion: ext ? ext.version : null,
+                server: VERSION,
+                protocol: PROTOCOL,
+                transport: "websocket",
+                lastSeenAgoMs: ext ? Date.now() - ext.lastSeen : null,
+                pending: waiters.size,
             });
         }
 
-        // Extension long-poll di sini.
-        if (url.pathname === "/poll") {
-            lastPollAt = Date.now();
-            if (queue.length) return send(res, 200, queue.shift());
-            const p = {};
-            p.timer = setTimeout(() => {
-                const i = polls.indexOf(p);
-                if (i >= 0) polls.splice(i, 1);
-                send(res, 200, { idle: true });
-            }, POLL_MS);
-            p.resolve = (job) => send(res, 200, job);
-            polls.push(p);
-            return;
-        }
-
-        const body = await readBody(req);
-
-        // Extension melaporkan hasil.
-        if (url.pathname === "/result") {
-            const { id, ok, result, error } = body || {};
-            const w = waiters.get(id);
-            if (w) {
-                waiters.delete(id);
-                clearTimeout(w.timer);
-                w.resolve(ok ? { ok: true, result } : { ok: false, error: error || "extension error" });
+        if (url.pathname === "/cmd" && req.method === "POST") {
+            if (!tokenOk(req)) return send(res, 401, { ok: false, error: "token salah / tidak ada" });
+            let body = "";
+            for await (const c of req) body += c;
+            let data;
+            try {
+                data = JSON.parse(body || "{}");
+            } catch {
+                return send(res, 400, { ok: false, error: "JSON tidak valid" });
             }
-            return send(res, 200, { ok: true });
-        }
-
-        // CLI mengirim perintah.
-        if (url.pathname === "/cmd") {
-            const { cmd: c, args = [], flags: f = {}, timeout } = body || {};
+            const { cmd: c, args = [], flags: f = {}, timeout } = data;
             if (!c) return send(res, 400, { ok: false, error: "cmd kosong" });
             const lc = String(c).toLowerCase();
 
-            // Perintah yang dikelola server (tanpa extension).
-            if (lc === "mine" || lc === "tabs-mine") {
-                return send(res, 200, { ok: true, result: [...mine.values()] });
+            if (lc === "mine" || lc === "tabs-mine") return send(res, 200, { ok: true, result: [...mine.values()] });
+
+            if (!extAlive() && !(await waitExt(4000))) return send(res, 503, { ok: false, error: EXT_HINT, hint: EXT_DIR });
+
+            // Default tab group + guard dari config (aturan: kerja di group sendiri).
+            const createsNewTab = lc === "open" || lc === "new" || (lc === "goto" && (f.new === true || f.new === "true"));
+            if (createsNewTab && !f.group && !f["no-group"] && cfg.defaultGroup) {
+                f.group = cfg.defaultGroup;
+                if (!f.color && cfg.defaultColor) f.color = cfg.defaultColor;
             }
+            if ((lc === "close-group" || lc === "closegroup") && !args[0] && !f.group) args.push(cfg.defaultGroup);
+            f.__guard = cfg.guard !== false;
+            f.__guardGroup = cfg.defaultGroup;
 
-            if (!extAlive()) return send(res, 503, { ok: false, error: EXT_HINT, hint: EXT_DIR });
-
-            // Tutup semua tab yang dibuka bridge. --dry-run cuma menampilkan.
             if (lc === "close-mine" || lc === "close-mine-all") {
                 const items = [...mine.values()];
-                if (f["dry-run"] === true || f["dry-run"] === "true" || f["dryRun"] === true) {
-                    return send(res, 200, { ok: true, result: { dryRun: true, wouldClose: items } });
-                }
+                if (f["dry-run"]) return send(res, 200, { ok: true, result: { dryRun: true, wouldClose: items } });
                 const closed = [];
                 const failed = [];
                 for (const t of items) {
-                    const r = await relay("close", [t.id], { tabId: t.id }, timeout);
+                    const r = await relay("close", [t.id], { tabId: t.id, force: true }, timeout);
                     if (r.ok) {
-                        forget(t.id);
+                        mine.delete(String(t.id));
                         closed.push(t.id);
-                    } else {
-                        failed.push({ id: t.id, error: r.error });
-                    }
+                    } else failed.push({ id: t.id, error: r.error });
                 }
-                return send(res, 200, {
-                    ok: true,
-                    result: { closed, count: closed.length, failed, remaining: [...mine.values()] },
-                });
+                return send(res, 200, { ok: true, result: { closed, count: closed.length, failed, remaining: [...mine.values()] } });
             }
 
             const out = await relay(c, args, f, timeout);
             if (out.ok) {
-                if (createsNewTab(lc, f)) remember(out.result);
-                if (lc === "close" && out.result && out.result.closed !== undefined) forget(out.result.closed);
-                // close-group: sinkronkan pelacakan tab bridge.
-                if ((lc === "close-group" || lc === "closegroup") && out.result && Array.isArray(out.result.closed)) {
-                    out.result.closed.forEach(forget);
+                const r = out.result;
+                if (createsNewTab && r && r.tabId !== undefined) {
+                    mine.set(String(r.tabId), { id: r.tabId, url: r.url || "", title: r.title || "", groupId: r.groupId ?? null, at: Date.now() });
                 }
+                if (lc === "close" && r && r.closed !== undefined) mine.delete(String(r.closed));
+                if ((lc === "close-group" || lc === "closegroup") && r && Array.isArray(r.closed)) r.closed.forEach((id) => mine.delete(String(id)));
             }
             return send(res, out.ok ? 200 : 500, out);
         }
 
-        if (url.pathname === "/") {
-            return send(res, 200, {
-                name: "brave-bridge",
-                ext: extAlive(),
-                endpoints: ["/health", "/poll", "/result", "/cmd"],
-            });
-        }
-
+        if (url.pathname === "/") return send(res, 200, { name: "brave-bridge", version: VERSION, ext: extAlive() });
         return send(res, 404, { ok: false, error: "not found" });
     });
 
+    server.on("upgrade", (req, socket) => {
+        const reject = (code, msg) => {
+            socket.write(`HTTP/1.1 ${code} ${msg}\r\nConnection: close\r\n\r\n`);
+            socket.destroy();
+        };
+        const url = new URL(req.url, `http://${HOST}:${PORT}`);
+        if (url.pathname !== "/ws" || !okHost(req)) return reject(404, "Not Found");
+        const id = extOrigin(req.headers.origin);
+        if (!id) return reject(403, "Forbidden");
+        if (cfg.extId && cfg.extId !== id) {
+            log(`[ws] DITOLAK: extension ${id} bukan yang di-pin (${cfg.extId}). Kalau memang ganti extension: serve --reset-ext`);
+            return reject(403, "Forbidden");
+        }
+        if (!cfg.extId) {
+            cfg.extId = id;
+            saveConfig(cfg);
+            log(`[ws] extension di-pin: ${id}`);
+        }
+        const conn = wsAccept(req, socket);
+        if (ext && ext.conn.open) ext.conn.close();
+        const me = { conn, version: null, id, lastSeen: Date.now() };
+        ext = me;
+        log(`[ws] extension konek (${id})`);
+        conn.onmessage = (raw) => {
+            me.lastSeen = Date.now();
+            let m;
+            try {
+                m = JSON.parse(raw);
+            } catch {
+                return;
+            }
+            if (m.type === "hello") {
+                me.version = m.version;
+                log(`[ws] extension v${m.version}`);
+                if (m.version !== VERSION) log(`[ws] PERINGATAN: versi extension (${m.version}) != server (${VERSION}). Reload extension.`);
+            } else if (m.type === "result") {
+                const w = waiters.get(m.id);
+                if (w) {
+                    waiters.delete(m.id);
+                    clearTimeout(w.timer);
+                    w.resolve(m.ok ? { ok: true, result: m.result } : { ok: false, error: m.error || "extension error" });
+                }
+            }
+        };
+        conn.onclose = () => {
+            if (ext === me) ext = null;
+            log("[ws] extension putus");
+        };
+    });
+
+    // Ping server -> extension; tutup koneksi zombie.
+    setInterval(() => {
+        if (!ext) return;
+        if (Date.now() - ext.lastSeen > 70000) {
+            log("[ws] extension tidak merespon, tutup koneksi");
+            ext.conn.close();
+            ext = null;
+            return;
+        }
+        ext.conn.send('{"type":"ping"}');
+    }, 20000);
+
     server.listen(PORT, HOST, () => {
-        console.log(`brave-bridge listening on http://${HOST}:${PORT}`);
-        console.log(`Extension folder (Load unpacked): ${EXT_DIR}`);
-        console.log("Extension status: menunggu konek... (badge extension jadi ON kalau sudah nyambung)");
+        log(`brave-bridge v${VERSION} listening on http://${HOST}:${PORT} (ws: /ws)`);
+        log(`config: ${CONFIG_PATH}${cfg.extId ? ` | extension di-pin: ${cfg.extId}` : " | extension belum di-pin (pertama konek akan di-pin)"}`);
+        log(`default group: "${cfg.defaultGroup}" (${cfg.defaultColor}) | guard: ${cfg.guard ? "ON" : "OFF"}`);
     });
     server.on("error", (e) => {
-        if (e.code === "EADDRINUSE") {
-            console.error(`Port ${PORT} sudah dipakai. Mungkin server sudah jalan. Coba: node tools/brave-bridge.mjs status`);
-        } else {
-            console.error(String(e.message || e));
-        }
+        if (e.code === "EADDRINUSE") console.error(`Port ${PORT} sudah dipakai. Server mungkin sudah jalan (cek: curl.exe -s http://127.0.0.1:${PORT}/health).`);
+        else console.error(String(e.message || e));
         process.exit(1);
     });
 }
 
 // ---------------------------------------------------------------- CLI mode
 function pretty(c, result) {
-    if (c === "status") return JSON.stringify(result, null, 2);
+    if (flags.json) return JSON.stringify(result, null, 2);
     if (c === "mine" || c === "tabs-mine") {
         if (!Array.isArray(result) || !result.length) return "(tidak ada tab buatan bridge)";
-        return result
-            .map((t) => `[${t.id}]${t.groupId ? ` (group ${t.groupId})` : ""} ${t.title || "(no title)"}\n      ${t.url || ""}`)
-            .join("\n");
+        return result.map((t) => `[${t.id}] ${t.title || "(no title)"}\n      ${t.url || ""}`).join("\n");
     }
     if (c === "close-mine" || c === "close-mine-all") {
-        if (result && result.dryRun) {
-            const n = (result.wouldClose || []).length;
-            return `DRY-RUN: akan menutup ${n} tab buatan bridge:\n` +
-                (result.wouldClose || []).map((t) => `[${t.id}] ${t.url}`).join("\n");
-        }
-        return `Ditutup: ${result.count} tab` +
-            (result.failed && result.failed.length ? `\nGagal: ${JSON.stringify(result.failed)}` : "") +
-            `\nSisa tab bridge: ${(result.remaining || []).length}`;
+        if (result && result.dryRun) return `DRY-RUN: akan menutup ${result.wouldClose.length} tab:\n` + result.wouldClose.map((t) => `[${t.id}] ${t.url}`).join("\n");
+        return `Ditutup: ${result.count} tab` + (result.failed.length ? `\nGagal: ${JSON.stringify(result.failed)}` : "");
     }
     if (c === "tabs" && Array.isArray(result)) {
+        if (!result.length) return "(tidak ada tab)";
         return result
             .sort((a, b) => Number(b.active) - Number(a.active))
             .map((t) => `${t.active ? "*" : " "} [${t.id}]${t.group ? ` <${t.group}>` : ""} ${t.title || "(no title)"}\n      ${t.url || ""}`)
@@ -304,8 +433,21 @@ function pretty(c, result) {
     }
     if (c === "close-group" || c === "closegroup") {
         if (result && result.note) return `${result.note} (ditutup: 0)`;
-        return `Group "${result.group}": ditutup ${result.count} tab` +
-            (result.closed && result.closed.length ? ` [${result.closed.join(", ")}]` : "");
+        return `Group "${result.group}": ditutup ${result.count} tab` + (result.closed.length ? ` [${result.closed.join(", ")}]` : "");
+    }
+    if (c === "snapshot" && result && Array.isArray(result.lines)) {
+        return `${result.title}\n${result.url}\n${result.count} elemen interaktif\n\n${result.lines.join("\n")}`;
+    }
+    if (c === "links" && Array.isArray(result)) return result.map((l) => `${l.text || "(no text)"}\n    ${l.href}`).join("\n");
+    if (c === "console" && Array.isArray(result)) {
+        if (!result.length) return "(console kosong)";
+        return result.map((e) => `[${new Date(e.t).toLocaleTimeString()}] ${String(e.level).toUpperCase().padEnd(9)} ${e.text}${e.src ? `  (${e.src})` : ""}`).join("\n");
+    }
+    if (c === "net" && Array.isArray(result)) {
+        if (!result.length) return "(tidak ada request)";
+        return result
+            .map((r) => `${String(r.status ?? "...").padEnd(4)} ${r.method.padEnd(6)} ${(r.type || "").padEnd(10)} ${r.url.slice(0, 140)}${r.failed ? `  !! ${r.failed}` : ""}  #${r.id}`)
+            .join("\n");
     }
     if (typeof result === "string") return result;
     return JSON.stringify(result, null, 2);
@@ -321,73 +463,131 @@ async function saveShot(result) {
     const m = /^data:image\/(png|jpeg);base64,(.*)$/s.exec(result.dataUrl || "");
     if (!m) return null;
     const ext = m[1] === "jpeg" ? "jpg" : "png";
-    await mkdir(ARTIFACT_DIR, { recursive: true });
-    const file = path.join(ARTIFACT_DIR, `shot-${ts()}.${ext}`);
+    const file = flags.out && flags.out !== true ? path.resolve(String(flags.out)) : path.join(ARTIFACT_DIR, `shot-${ts()}.${ext}`);
+    await mkdir(path.dirname(file), { recursive: true });
     await writeFile(file, Buffer.from(m[2], "base64"));
     return file;
 }
 
+async function readStdin() {
+    let s = "";
+    for await (const c of process.stdin) s += c;
+    return s;
+}
+
+function startupVbsPath() {
+    return path.join(process.env.APPDATA || "", "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "brave-bridge.vbs");
+}
+
+function installAutostart() {
+    const vbs = startupVbsPath();
+    const q = (s) => s.replace(/"/g, '""');
+    const line = `cmd /c ""${q(process.execPath)}" "${q(fileURLToPath(import.meta.url))}" serve >> "${q(LOG_PATH)}" 2>&1"`;
+    mkdirSync(path.dirname(vbs), { recursive: true });
+    writeFileSync(vbs, `' brave-bridge autostart (dibuat oleh brave-bridge.mjs install-autostart)\r\nCreateObject("WScript.Shell").Run "${q(line)}", 0, False\r\n`);
+    console.log(`Autostart terpasang: ${vbs}`);
+    console.log(`Server akan jalan otomatis (tersembunyi) tiap login Windows. Log: ${LOG_PATH}`);
+}
+
+function uninstallAutostart() {
+    const vbs = startupVbsPath();
+    if (existsSync(vbs)) {
+        unlinkSync(vbs);
+        console.log(`Autostart dihapus: ${vbs}`);
+    } else console.log("Autostart tidak terpasang.");
+}
+
 function printHelp() {
-    console.log(`brave-bridge — kontrol Brave yang sedang jalan (tanpa close), ala Claude in Chrome.
+    console.log(`brave-bridge v${VERSION} — kontrol Brave yang sedang jalan (tanpa close/relaunch).
 
 Server:
-  node %USERPROFILE%\\.brave-bridge\\brave-bridge.mjs serve    # jalankan bridge (biarkan hidup)
+  serve [--verbose] [--reset-ext]             # jalankan bridge (biarkan hidup)
+  install-autostart | uninstall-autostart     # jalan otomatis tiap login Windows
 
 Info:
-  status                                      # extension + jumlah tab
-  tabs [--group "Nama"]                       # daftar semua tab (opsional: filter per tab group)
-  active                                      # tab aktif
-  url | title [--tabId N]
+  status | tabs [--group "Nama"] | active | frames | url | title
   window [--state normal|maximized|minimized|fullscreen] [--width W] [--height H]
 
-Tab buatan bridge (bersih-bersih):
-  mine                                        # daftar tab yang DIBUKA bridge (open/new/goto --new)
-  close-mine [--dry-run]                      # tutup SEMUA tab buatan bridge (tab user tidak disentuh)
-  close-group "Nama"                          # tutup HANYA tab di tab group tsb (per-automation)
+Tab (default: tab baru otomatis masuk group "Antigravity" ungu; --no-group untuk skip):
+  new [url] | open <url> | goto <url> --new | goto <url> --tabId N
+  close [tabId] | activate <tabId> | reload [--hard] | back | forward
+  close-group ["Nama"]                        # tanpa nama = group default
+  mine | close-mine [--dry-run]
 
-Navigasi:
-  goto <url> [--new] [--nowait] [--tabId N]   # tab aktif, atau tab baru dgn --new
-  open <url>                                  # selalu tab baru
-  new [url]  |  close [tabId]  |  activate <tabId>
-  reload [--hard]  |  back  |  forward
-  # opsi tab baru: --group "Nama" [--color blue] -> masukkan tab ke tab group (nama sama = reuse)
+Baca halaman:
+  snapshot [--viewport] [--max N]             # elemen interaktif + ref @N  (pakai: click @3)
+  text [sel] [--max N] | html [sel] [--max N] # default dipotong 20000 char, --max 0 = semua
+  links | forms | count <sel> | attr <sel> <name>
+  eval "<js>" | eval --file x.js | eval -     # async/await didukung; CSP ketat -> otomatis via CDP
+       [--isolated] [--cdp] [--no-cdp]
 
-DOM:
-  eval "<ekspresi JS>" [--isolated]
-  text [selector]   |  html [selector]   |  count <selector>   |  attr <selector> <name>
-  click <selector> [--index N] [--text "Label"]
-  fill <selector> <value> [--index N]     # set value + event input/change (React aman)
-  type <selector> <value> [--append]
-  select <selector> <value>  |  check <selector>  |  uncheck <selector>
-  key <Control+a> [selector]
-  scroll [selector|top|bottom]
-  wait <ms>   |  waitFor <selector> [--timeout ms]
-  shot [--jpeg] [--quality 80] [--tabId N]   # screenshot area tampak
+Interaksi (selector: css | @N | text=Label | host >>> inner; tembus shadow DOM):
+  click <sel> [--text "Label"] [--index N] [--cdp]
+  hover <sel> [--cdp] | focus <sel> [--clear]
+  fill <sel> <value> [--append] [--cdp]       # React/contentEditable aman
+  type <sel> <value> [--append] [--cdp]       # per karakter
+  select <sel> <value|label> | check <sel> | uncheck <sel>
+  key <Combo> [sel] [--cdp]                   # --cdp = keyboard trusted
+  scroll [top|bottom|+500|-500|sel]
+  upload <sel input[type=file]> <file...>     # via CDP
+  --frame N | --frame all                     # target iframe (lihat: frames)
 
-Batasan mode extension: console/net tidak ada (pakai tools/brave-cdp.mjs), shot = viewport saja,
-key bersifat sintetis (shortcut native browser tidak terpicu).
+Tunggu:
+  wait <ms> | waitFor <sel> [--gone] | waitFor --text "..." [--gone] | waitUrl <substr|/regex/>
 
-Option global: --tabId N  --timeout ms`);
+Screenshot:
+  shot [--jpeg] [--quality 80] [--selector sel] [--full] [--out file]
+  # tab background otomatis diaktifkan sebentar lalu dikembalikan; --full pakai CDP
+
+Console & network (CDP, Brave tampilkan bar "debugging" selama capture):
+  capture start|stop|status [--tabId N]
+  console [--level error|warning|log] [--last N] [--clear] [--all]   # --all = ikut log extension lain
+  net [--filter str] [--failed] [--last N] [--clear] | net --body <requestId>
+
+Guard: aksi yang mengubah tab di luar group "Antigravity" ditolak kecuali --force.
+Global: --tabId N  --timeout ms  --json`);
 }
 
 async function runCli() {
     if (cmd === "help" || flags.help) return printHelp();
+    if (cmd === "install-autostart") return installAutostart();
+    if (cmd === "uninstall-autostart") return uninstallAutostart();
+
+    const cfg = loadConfig(false);
+    if (!cfg.token) {
+        console.error(`Token belum ada (${CONFIG_PATH}). Jalankan server dulu: node "${fileURLToPath(import.meta.url)}" serve`);
+        process.exit(2);
+    }
+
+    const args = positional.slice();
+    if (cmd === "eval") {
+        if (flags.file && flags.file !== true) {
+            args.splice(0, args.length, await readFile(path.resolve(String(flags.file)), "utf8"));
+            delete flags.file;
+        } else if (args.length === 1 && args[0] === "-") {
+            args.splice(0, 1, await readStdin());
+        }
+    }
+    if (cmd === "upload") {
+        for (let i = 1; i < args.length; i++) {
+            args[i] = path.resolve(args[i]);
+            if (!existsSync(args[i])) {
+                console.error(`File tidak ada: ${args[i]}`);
+                process.exit(1);
+            }
+        }
+    }
 
     let res;
     try {
         res = await fetch(`http://${HOST}:${PORT}/cmd`, {
             method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-                cmd,
-                args: positional,
-                flags,
-                timeout: Number(flags.timeout || CMD_TIMEOUT),
-            }),
+            headers: { "content-type": "application/json", "x-bridge-token": cfg.token },
+            body: JSON.stringify({ cmd, args, flags, timeout: Number(flags.timeout || CMD_TIMEOUT) }),
         });
     } catch {
         console.error(`Tidak bisa konek ke bridge (http://${HOST}:${PORT}). Server belum jalan?`);
-        console.error("Jalankan dulu: npm run brave:bridge:serve");
+        console.error(`Jalankan: node "${fileURLToPath(import.meta.url)}" serve`);
         process.exit(2);
     }
 
@@ -398,7 +598,6 @@ async function runCli() {
     } catch {
         json = { ok: res.ok, result: text };
     }
-
     if (!json.ok) {
         console.error(`GAGAL: ${json.error || "unknown"}`);
         if (json.hint) console.error(`Extension folder: ${json.hint}`);
@@ -409,16 +608,11 @@ async function runCli() {
         const file = await saveShot(json.result);
         console.log(`shot: ${file || "(gagal simpan)"}`);
         console.log(`tab: ${json.result.title} — ${json.result.url}`);
-        console.log(`note: ${json.result.note}`);
+        console.log(`mode: ${json.result.note}`);
         return;
     }
-
     console.log(pretty(cmd, json.result));
 }
 
-// ---------------------------------------------------------------- dispatch
-if (cmd === "serve" || cmd === "server") {
-    startServer();
-} else {
-    runCli();
-}
+if (cmd === "serve" || cmd === "server") startServer();
+else runCli();
