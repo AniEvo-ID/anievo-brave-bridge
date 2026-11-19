@@ -22,7 +22,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "
 import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "2.2.0";
+const VERSION = "2.3.0";
 const PROTOCOL = 2;
 const HOST = "127.0.0.1";
 const PORT = Number(process.env.BRAVE_BRIDGE_PORT || 8787);
@@ -31,8 +31,20 @@ const ARTIFACT_DIR = process.env.BRAVE_CDP_ARTIFACTS || path.join(os.homedir(), 
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const EXT_DIR = path.join(__dirname, "brave-extension");
-const CONFIG_PATH = path.join(__dirname, "config.json");
+const CONFIG_PATH = process.env.BRAVE_BRIDGE_CONFIG ? path.resolve(process.env.BRAVE_BRIDGE_CONFIG) : path.join(__dirname, "config.json");
 const LOG_PATH = path.join(__dirname, "server.log");
+const SESSION_COLORS = ["blue", "cyan", "green", "orange", "pink", "yellow", "red", "purple"];
+
+function cleanSession(s) {
+    if (!s || s === true) return "";
+    return String(s).trim().replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 24);
+}
+
+function sessionColor(s) {
+    let h = 0;
+    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+    return SESSION_COLORS[h % SESSION_COLORS.length];
+}
 
 const EXT_HINT =
     'Extension belum konek. Pastikan Brave jalan dan extension "AniEvo Brave Bridge" enabled di brave://extensions ' +
@@ -73,7 +85,7 @@ function saveConfig(cfg) {
 // Flag boolean murni: jangan "makan" argumen positional sesudahnya.
 const BOOL_FLAGS = new Set(["new", "nowait", "background", "hard", "isolated", "cdp", "no-cdp", "append", "force", "clear", "gone",
     "full", "jpeg", "jpg", "viewport", "no-headings", "failed", "dry-run", "no-group", "json", "verbose", "reset-ext", "help", "all",
-    "foreground", "activate"]);
+    "foreground", "activate", "all-sessions"]);
 const argv = process.argv.slice(2);
 const positional = [];
 const flags = {};
@@ -301,15 +313,20 @@ function startServer() {
             const waitMs = process.uptime() < 30 ? 15000 : 4000;
             if (!extAlive() && !(await waitExt(waitMs))) return send(res, 503, { ok: false, error: EXT_HINT, hint: EXT_DIR });
 
-            // Default tab group + guard dari config (aturan: kerja di group sendiri).
+            // Default tab group + isolasi per sesi (--session <id> -> "<defaultGroup>-<id>") + guard.
+            const baseGroup = cfg.defaultGroup || "Antigravity";
+            const sess = cleanSession(f.session);
+            const sessGroup = sess ? `${baseGroup}-${sess}` : baseGroup;
             const createsNewTab = lc === "open" || lc === "new" || (lc === "goto" && (f.new === true || f.new === "true"));
-            if (createsNewTab && !f.group && !f["no-group"] && cfg.defaultGroup) {
-                f.group = cfg.defaultGroup;
-                if (!f.color && cfg.defaultColor) f.color = cfg.defaultColor;
+            if (createsNewTab && !f.group && !f["no-group"] && baseGroup) {
+                f.group = sessGroup;
+                if (!f.color) f.color = sess ? sessionColor(sess) : cfg.defaultColor;
             }
-            if ((lc === "close-group" || lc === "closegroup") && !args[0] && !f.group) args.push(cfg.defaultGroup);
+            if (lc === "tabs" && sess && !f.group && !f["all-sessions"]) f.group = sessGroup;
+            if ((lc === "close-group" || lc === "closegroup") && !args[0] && !f.group && !f["all-sessions"]) args.push(sessGroup);
             f.__guard = cfg.guard !== false;
-            f.__guardGroup = cfg.defaultGroup;
+            f.__guardGroup = baseGroup;
+            if (sess) f.__sessionGroup = sessGroup;
 
             if (lc === "close-mine" || lc === "close-mine-all") {
                 const items = [...mine.values()];
@@ -512,10 +529,10 @@ Info:
   window [--state normal|maximized|minimized|fullscreen] [--width W] [--height H]
 
 Tab (default: tab baru dibuka di BACKGROUND -> fokus user tidak pindah; --foreground untuk langsung aktif.
-     Tab baru otomatis masuk group "Antigravity" ungu; --no-group untuk skip):
+     Tab baru masuk group "Antigravity" (atau "Antigravity-<id>" dengan --session <id>); --no-group untuk skip):
   new [url] | open <url> | goto <url> --new | goto <url> --tabId N
   close [tabId] | activate <tabId> | reload [--hard] | back | forward
-  close-group ["Nama"]                        # tanpa nama = group default
+  close-group ["Nama"] [--all-sessions]       # tanpa nama = group sesi aktif; --all-sessions = semua sesi
   mine | close-mine [--dry-run]
 
 Baca halaman:
@@ -550,14 +567,15 @@ Console & network (CDP, Brave tampilkan bar "debugging" selama capture):
   console [--level error|warning|log] [--last N] [--clear] [--all]   # --all = ikut log extension lain
   net [--filter str] [--failed] [--last N] [--clear] | net --body <requestId>
 
-Guard: aksi yang mengubah tab di luar group "Antigravity" ditolak kecuali --force.
-Global: --tabId N  --timeout ms  --json`);
+Guard: aksi yang mengubah tab di luar group "Antigravity" (atau sesi lain) ditolak kecuali --force.
+Global: --tabId N  --session <id> (atau env BRAVE_BRIDGE_SESSION)  --timeout ms  --json`);
 }
 
 async function runCli() {
     if (cmd === "help" || flags.help) return printHelp();
     if (cmd === "install-autostart") return installAutostart();
     if (cmd === "uninstall-autostart") return uninstallAutostart();
+    if (!flags.session && process.env.BRAVE_BRIDGE_SESSION) flags.session = process.env.BRAVE_BRIDGE_SESSION;
 
     const cfg = loadConfig(false);
     if (!cfg.token) {
