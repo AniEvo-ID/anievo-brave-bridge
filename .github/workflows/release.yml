@@ -71,8 +71,7 @@ jobs:
               --generate-notes
           fi
 
-      - name: Publish to npm via OIDC Trusted Publisher (with Provenance)
+      - name: Publish to npm (OIDC Trusted Publisher if linked)
         run: |
           npm install -g npm@latest
-          npm --version
-          npm publish --provenance --access public
+          npm publish --provenance --access public || echo "::warning::npm OIDC Trusted Publisher belum terhubung di npmjs.com/package/anievo-brave-bridge/access — lewati auto-publish npm."
