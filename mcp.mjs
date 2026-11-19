@@ -17,7 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "2.5.0";
+const VERSION = "2.6.0";
 const PORT = Number(process.env.BRAVE_BRIDGE_PORT || 8787);
 const BASE = `http://127.0.0.1:${PORT}`;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -466,6 +466,29 @@ const TOOLS = [
             const act = a.action || "list";
             const args = act === "set" ? ["set", a.key, a.value ?? ""] : act === "get" || act === "remove" ? [act, a.key] : [act];
             return bridge("storage", args, f);
+        },
+    },
+    {
+        name: "browser_emulate",
+        description:
+            "Emulate a mobile/tablet/desktop viewport, user-agent, and prefers-color-scheme on an agent tab in the background without resizing the user's browser window. Use preset='reset' when done.",
+        inputSchema: obj({
+            tabId: S.tabId,
+            preset: { type: "string", enum: ["iphone", "pixel", "ipad", "desktop", "reset"] },
+            width: { type: "integer" },
+            height: { type: "integer" },
+            dpr: { type: "number" },
+            mobile: { type: "boolean" },
+            colorScheme: { type: "string", enum: ["dark", "light", "no-preference"] },
+        }),
+        run: (a) => {
+            const f = common(a);
+            if (a.width) f.width = a.width;
+            if (a.height) f.height = a.height;
+            if (a.dpr) f.dpr = a.dpr;
+            if (a.mobile !== undefined) f.mobile = a.mobile;
+            if (a.colorScheme) f["color-scheme"] = a.colorScheme;
+            return bridge("emulate", a.preset ? [a.preset] : [], f);
         },
     },
     {

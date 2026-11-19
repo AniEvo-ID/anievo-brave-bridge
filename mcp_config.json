@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "anievo-brave-bridge": {
+      "command": "node",
+      "args": [
+        "-e",
+        "const fs=require('fs'),os=require('os'),p=require('path'),h=os.homedir();const c=[p.join(process.cwd(),'mcp.mjs'),p.join(h,'.gemini','config','plugins','anievo-brave-bridge','mcp.mjs'),p.join(h,'.brave-bridge','mcp.mjs')].find(x=>fs.existsSync(x));if(!c){console.error('anievo-brave-bridge mcp.mjs not found');process.exit(1)}import('url').then(u=>import(u.pathToFileURL(c).href));"
+      ]
+    }
+  }
+}

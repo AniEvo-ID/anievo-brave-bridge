@@ -23,7 +23,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "
 import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "2.5.0";
+const VERSION = "2.6.0";
 const PROTOCOL = 2;
 const HOST = "127.0.0.1";
 const PORT = Number(process.env.BRAVE_BRIDGE_PORT || 8787);
@@ -86,7 +86,7 @@ function saveConfig(cfg) {
 // Flag boolean murni: jangan "makan" argumen positional sesudahnya.
 const BOOL_FLAGS = new Set(["new", "nowait", "background", "hard", "isolated", "cdp", "no-cdp", "append", "force", "clear", "gone",
     "full", "jpeg", "jpg", "viewport", "no-headings", "failed", "dry-run", "no-group", "json", "verbose", "reset-ext", "help", "all",
-    "foreground", "activate", "all-sessions", "double", "landscape", "no-bg", "secure", "httpOnly", "http-only", "sessionStorage", "session-storage"]);
+    "foreground", "activate", "all-sessions", "double", "landscape", "no-bg", "secure", "httpOnly", "http-only", "sessionStorage", "session-storage", "mobile"]);
 const argv = process.argv.slice(2);
 const positional = [];
 const flags = {};
@@ -646,9 +646,10 @@ Cookies & Storage (termasuk HttpOnly via CDP, dibatasi ke origin tab agent):
 Tunggu:
   wait <ms> | waitFor <sel> [--gone] | waitFor --text "..." [--gone] | waitUrl <substr|/regex/>
 
-Screenshot & PDF:
+Screenshot, PDF & Responsive Emulation:
   shot [--jpeg] [--quality 80] [--selector sel] [--full] [--out file] [--activate]
   pdf [--landscape] [--no-bg] [--out file.pdf]
+  emulate iphone|pixel|ipad|desktop|reset [--width W --height H] [--dpr N] [--mobile] [--color-scheme dark|light]
 
 Console & network (CDP, Brave tampilkan bar "debugging" selama capture):
   capture start|stop|status [--tabId N]
