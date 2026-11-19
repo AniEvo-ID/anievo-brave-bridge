@@ -1,0 +1,24 @@
+{
+    "manifest_version": 3,
+    "name": "AniEvo Brave Bridge",
+    "version": "1.2.0",
+    "description": "Bridge lokal buat kontrol Brave yang lagi jalan (tanpa close/relaunch), ala Claude in Chrome. Extension ini menempel keluar (long-poll) ke http://127.0.0.1:8787.",
+    "minimum_chrome_version": "111",
+    "permissions": [
+        "tabs",
+        "tabGroups",
+        "scripting",
+        "alarms"
+    ],
+    "host_permissions": [
+        "http://127.0.0.1:8787/*",
+        "http://localhost:8787/*",
+        "<all_urls>"
+    ],
+    "background": {
+        "service_worker": "background.js"
+    },
+    "action": {
+        "default_title": "AniEvo Brave Bridge"
+    }
+}

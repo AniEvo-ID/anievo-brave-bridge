@@ -1,0 +1,11 @@
+# Rahasia lokal (token auth) — JANGAN di-commit
+config.json
+
+# Log & artefak lokal
+*.log
+server.log
+
+# Folder kerja lokal
+scratch/
+backup-*/
+node_modules/
