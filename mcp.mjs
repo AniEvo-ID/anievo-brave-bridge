@@ -17,7 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "2.4.0";
+const VERSION = "2.5.0";
 const PORT = Number(process.env.BRAVE_BRIDGE_PORT || 8787);
 const BASE = `http://127.0.0.1:${PORT}`;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -183,15 +183,32 @@ const TOOLS = [
     },
     {
         name: "browser_click",
-        description: "Click an element (full pointer event sequence; works with React/Radix menus). Use selector or text.",
-        inputSchema: obj({ tabId: S.tabId, selector: S.selector, text: { type: "string", description: "Visible text to match." }, index: { type: "integer" }, frame: S.frame, trusted: S.trusted }),
+        description: "Click, double-click, or right-click an element (full pointer event sequence; works with React/Radix menus). Use selector or text.",
+        inputSchema: obj({
+            tabId: S.tabId,
+            selector: S.selector,
+            text: { type: "string", description: "Visible text to match." },
+            index: { type: "integer" },
+            double: { type: "boolean", description: "Double-click (dblclick)." },
+            button: { type: "string", enum: ["left", "right"], description: 'Mouse button (default "left"; "right" fires contextmenu).' },
+            frame: S.frame,
+            trusted: S.trusted,
+        }),
         run: (a) => {
             const f = common(a);
             if (a.text) f.text = a.text;
             if (a.index) f.index = a.index;
+            if (a.double) f.double = true;
+            if (a.button) f.button = a.button;
             if (a.trusted) f.cdp = true;
             return bridge("click", a.selector ? [a.selector] : [], f);
         },
+    },
+    {
+        name: "browser_drag",
+        description: "Drag an element onto another element (fires both Pointer/Mouse drag and HTML5 DragEvent + DataTransfer).",
+        inputSchema: obj({ tabId: S.tabId, from: S.selector, to: S.selector, frame: S.frame, trusted: S.trusted }, ["from", "to"]),
+        run: (a) => bridge("drag", [a.from, a.to], { ...common(a), ...(a.trusted ? { cdp: true } : {}) }),
     },
     {
         name: "browser_fill",
@@ -373,6 +390,82 @@ const TOOLS = [
         run: (a) => {
             for (const p of a.files) if (!existsSync(p)) throw new Error(`File tidak ada: ${p}`);
             return bridge("upload", [a.selector, ...a.files.map((p) => path.resolve(p))], common(a));
+        },
+    },
+    {
+        name: "browser_pdf",
+        description: "Export a tab to a vector PDF file in the background via CDP without stealing focus. Returns the saved file path.",
+        readOnly: true,
+        inputSchema: obj({
+            tabId: S.tabId,
+            landscape: { type: "boolean" },
+            noBackground: { type: "boolean" },
+            outPath: { type: "string", description: "Optional destination .pdf file path." },
+        }),
+        run: async (a) => {
+            const f = common(a);
+            if (a.landscape) f.landscape = true;
+            if (a.noBackground) f["no-bg"] = true;
+            const r = await bridge("pdf", [], f);
+            const file = a.outPath ? path.resolve(a.outPath) : path.join(ARTIFACT_DIR, `mcp-page-${Date.now()}.pdf`);
+            await mkdir(path.dirname(file), { recursive: true });
+            const buf = Buffer.from(r.pdfBase64, "base64");
+            await writeFile(file, buf);
+            return { saved: file, bytes: buf.length, title: r.title, url: r.url };
+        },
+    },
+    {
+        name: "browser_dialog",
+        description:
+            "Handle native JS dialogs (alert/confirm/prompt/beforeunload) so they never freeze the tab. Pre-arm BEFORE clicking with once-accept / once-dismiss / auto-accept / auto-dismiss, or unfreeze an already-open dialog with accept / dismiss.",
+        inputSchema: obj(
+            {
+                tabId: S.tabId,
+                action: { type: "string", enum: ["once-accept", "once-dismiss", "auto-accept", "auto-dismiss", "accept", "dismiss", "off", "status"] },
+                promptText: { type: "string", description: "Text to enter for window.prompt()." },
+            },
+            ["action"]
+        ),
+        run: (a) => bridge("dialog", a.promptText !== undefined ? [a.action, a.promptText] : [a.action], common(a)),
+    },
+    {
+        name: "browser_cookies",
+        description: "Inspect, set, delete, or clear cookies (including HttpOnly, Secure, SameSite) scoped strictly to the agent tab's URL.",
+        inputSchema: obj({
+            tabId: S.tabId,
+            action: { type: "string", enum: ["list", "set", "delete", "clear"], description: 'Default "list".' },
+            name: { type: "string" },
+            value: { type: "string" },
+            httpOnly: { type: "boolean" },
+            secure: { type: "boolean" },
+            sameSite: { type: "string", enum: ["Lax", "Strict", "None"] },
+        }),
+        run: (a) => {
+            const act = a.action || "list";
+            const f = common(a);
+            if (a.httpOnly) f["http-only"] = true;
+            if (a.secure) f.secure = true;
+            if (a.sameSite) f.sameSite = a.sameSite;
+            const args = act === "set" ? ["set", a.name, a.value ?? ""] : act === "delete" ? ["delete", a.name] : [act];
+            return bridge("cookies", args, f);
+        },
+    },
+    {
+        name: "browser_storage",
+        description: "Read, set, remove, or clear localStorage / sessionStorage on the agent tab's origin.",
+        inputSchema: obj({
+            tabId: S.tabId,
+            area: { type: "string", enum: ["local", "session"], description: 'Default "local".' },
+            action: { type: "string", enum: ["list", "get", "set", "remove", "clear"], description: 'Default "list".' },
+            key: { type: "string" },
+            value: { type: "string" },
+        }),
+        run: (a) => {
+            const f = common(a);
+            if (a.area === "session") f["session-storage"] = true;
+            const act = a.action || "list";
+            const args = act === "set" ? ["set", a.key, a.value ?? ""] : act === "get" || act === "remove" ? [act, a.key] : [act];
+            return bridge("storage", args, f);
         },
     },
     {

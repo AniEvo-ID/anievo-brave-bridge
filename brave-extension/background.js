@@ -16,8 +16,9 @@ const BLOCKED_SCHEME = /^(chrome|brave|edge|about|devtools|chrome-extension|brav
 const GROUP_COLORS = ["grey", "blue", "red", "yellow", "green", "pink", "purple", "cyan", "orange"];
 // Command yang mengubah halaman/tab -> kena guard tab group.
 const MUTATING = new Set([
-    "goto", "reload", "back", "forward", "close", "click", "hover", "fill", "type",
-    "select", "check", "uncheck", "key", "scroll", "eval", "upload", "focus",
+    "goto", "reload", "back", "forward", "close", "click", "dblclick", "rightclick", "drag",
+    "hover", "fill", "type", "select", "check", "uncheck", "key", "scroll", "eval", "upload",
+    "focus", "dialog", "cookies", "storage",
 ]);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -180,7 +181,7 @@ async function attach(tabId) {
     } catch (e) {
         throw bad(`Gagal attach debugger ke tab ${tabId}: ${e.message}. (DevTools sedang terbuka di tab itu?)`);
     }
-    const s = { persistent: false, console: [], net: new Map() };
+    const s = { persistent: false, dialogMode: null, dialogPrompt: undefined, dialogs: [], console: [], net: new Map() };
     dbg.set(tabId, s);
     return s;
 }
@@ -198,7 +199,7 @@ async function withDebugger(tabId, fn) {
         return await fn(send);
     } finally {
         const s = dbg.get(tabId);
-        if (!had && s && !s.persistent) await detach(tabId);
+        if (!had && s && !s.persistent && !s.dialogMode) await detach(tabId);
     }
 }
 
@@ -209,7 +210,33 @@ const remoteToText = (a) =>
 
 chrome.debugger.onEvent.addListener((src, method, p) => {
     const s = dbg.get(src.tabId);
-    if (!s || !s.persistent) return;
+    if (!s) return;
+    if (method === "Page.javascriptDialogOpening") {
+        const entry = { t: Date.now(), type: p.type, message: p.message, defaultPrompt: p.defaultPrompt || "", handled: null };
+        s.dialogs.push(entry);
+        if (s.dialogs.length > 50) s.dialogs.shift();
+        if (s.dialogMode) {
+            const accept = s.dialogMode.endsWith("accept");
+            const once = s.dialogMode.startsWith("once-");
+            const promptText = s.dialogPrompt;
+            entry.handled = accept ? "accepted" : "dismissed";
+            if (once) {
+                s.dialogMode = null;
+                s.dialogPrompt = undefined;
+            }
+            chrome.debugger
+                .sendCommand({ tabId: src.tabId }, "Page.handleJavaScriptDialog", {
+                    accept,
+                    ...(promptText !== undefined ? { promptText: String(promptText) } : {}),
+                })
+                .then(() => {
+                    if (once && !s.persistent) detach(src.tabId);
+                })
+                .catch(() => { });
+        }
+        return;
+    }
+    if (!s.persistent) return;
     const pushC = (entry) => {
         s.console.push(entry);
         if (s.console.length > MAX_CONSOLE) s.console.shift();
@@ -309,17 +336,40 @@ async function withInput(tabId, fn) {
     });
 }
 
-async function cdpClick(tabId, flags, o) {
+async function cdpClick(tabId, flags, o, { button = "left", clickCount = 1 } = {}) {
     if (flags.frame !== undefined) throw bad("--cdp click belum mendukung --frame.");
+    const buttons = button === "right" ? 2 : 1;
     return inputVisible(tabId, flags, () =>
         withInput(tabId, async (send) => {
             const r = await dom(tabId, flags, "rect", o);
             const x = r.x + r.w / 2;
             const y = r.y + r.h / 2;
             await send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
-            await send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: 1 });
-            await send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: 1 });
-            return { ok: true, trusted: true, x: Math.round(x), y: Math.round(y) };
+            for (let c = 1; c <= clickCount; c++) {
+                await send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button, buttons, clickCount: c });
+                await send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button, buttons: 0, clickCount: c });
+            }
+            return { ok: true, trusted: true, button, clickCount, x: Math.round(x), y: Math.round(y) };
+        })
+    );
+}
+
+async function cdpDrag(tabId, flags, fromSel, toSel) {
+    if (flags.frame !== undefined) throw bad("--cdp drag belum mendukung --frame.");
+    return inputVisible(tabId, flags, () =>
+        withInput(tabId, async (send) => {
+            const a = await dom(tabId, flags, "rect", { sel: fromSel });
+            const b = await dom(tabId, flags, "rect", { sel: toSel, scroll: false });
+            const x1 = a.x + a.w / 2, y1 = a.y + a.h / 2;
+            const x2 = b.x + b.w / 2, y2 = b.y + b.h / 2;
+            await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: x1, y: y1 });
+            await send("Input.dispatchMouseEvent", { type: "mousePressed", x: x1, y: y1, button: "left", buttons: 1, clickCount: 1 });
+            for (let i = 1; i <= 5; i++) {
+                const k = i / 5;
+                await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: x1 + (x2 - x1) * k, y: y1 + (y2 - y1) * k, button: "left", buttons: 1 });
+            }
+            await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: x2, y: y2, button: "left", buttons: 0, clickCount: 1 });
+            return { ok: true, trusted: true, from: [Math.round(x1), Math.round(y1)], to: [Math.round(x2), Math.round(y2)] };
         })
     );
 }
@@ -743,11 +793,25 @@ async function handle(cmd, params = {}) {
             return dom(id, flags, "forms", {});
         }
 
-        case "click": {
+        case "click":
+        case "dblclick":
+        case "rightclick": {
             const id = await target();
             const o = { sel: args[0] || "", text, index: idx };
-            if (truthy(flags.cdp)) return cdpClick(id, flags, o);
-            return dom(id, flags, "click", o);
+            const isRight = cmd === "rightclick" || flags.button === "right";
+            const isDouble = cmd === "dblclick" || truthy(flags.double);
+            if (truthy(flags.cdp)) {
+                return cdpClick(id, flags, o, { button: isRight ? "right" : "left", clickCount: isDouble ? 2 : 1 });
+            }
+            return dom(id, flags, isRight ? "rightclick" : isDouble ? "dblclick" : "click", o);
+        }
+
+        case "drag": {
+            const [fromSel, toSel] = args;
+            if (!fromSel || !toSel) throw bad("Pakai: drag <selector-asal> <selector-tujuan>");
+            const id = await target();
+            if (truthy(flags.cdp)) return cdpDrag(id, flags, fromSel, toSel);
+            return dom(id, flags, "drag", { from: fromSel, to: toSel });
         }
 
         case "hover": {
@@ -857,6 +921,115 @@ async function handle(cmd, params = {}) {
         case "shot": {
             const id = await tabIdOf(flags);
             return shot(id, flags);
+        }
+
+        case "pdf": {
+            const id = await tabIdOf(flags);
+            const t0 = await ensureInjectable(id);
+            const pdfBase64 = await withDebugger(id, async (send) => {
+                const r = await send("Page.printToPDF", {
+                    printBackground: !truthy(flags["no-bg"]),
+                    landscape: truthy(flags.landscape),
+                    preferCSSPageSize: true,
+                });
+                return r.data;
+            });
+            return { pdfBase64, tabId: id, url: t0.url, title: t0.title };
+        }
+
+        case "dialog": {
+            const act = String(args[0] || "status").toLowerCase();
+            const promptText = args[1] !== undefined ? String(args[1]) : flags.prompt !== undefined && flags.prompt !== true ? String(flags.prompt) : undefined;
+            const id = act === "status" ? await tabIdOf(flags) : await target();
+            if (act === "status") {
+                const s = dbg.get(id);
+                return { tabId: id, mode: s ? s.dialogMode : null, dialogs: s ? s.dialogs : [] };
+            }
+            if (act === "off") {
+                const s = dbg.get(id);
+                if (s) {
+                    s.dialogMode = null;
+                    s.dialogPrompt = undefined;
+                    if (!s.persistent) await detach(id);
+                }
+                return { ok: true, tabId: id, mode: null };
+            }
+            if (["once-accept", "once-dismiss", "auto-accept", "auto-dismiss"].includes(act)) {
+                const s = await attach(id);
+                s.dialogMode = act;
+                s.dialogPrompt = promptText;
+                await chrome.debugger.sendCommand({ tabId: id }, "Page.enable", {});
+                return { ok: true, tabId: id, mode: act };
+            }
+            if (act === "accept" || act === "dismiss") {
+                return withDebugger(id, async (send) => {
+                    await send("Page.enable");
+                    await send("Page.handleJavaScriptDialog", {
+                        accept: act === "accept",
+                        ...(promptText !== undefined ? { promptText } : {}),
+                    });
+                    return { ok: true, handled: act };
+                });
+            }
+            throw bad(`Aksi dialog tidak dikenal: ${act}. Pakai: accept|dismiss|once-accept|once-dismiss|auto-accept|auto-dismiss|off|status`);
+        }
+
+        case "cookies": {
+            const sub = String(args[0] || "list").toLowerCase();
+            const id = await target();
+            const t0 = await ensureInjectable(id);
+            return withDebugger(id, async (send) => {
+                if (sub === "set") {
+                    const [, name, value = ""] = args;
+                    if (!name) throw bad("Pakai: cookies set <name> <value>");
+                    const params = {
+                        url: t0.url,
+                        name: String(name),
+                        value: String(value),
+                        path: typeof flags.path === "string" ? flags.path : "/",
+                        secure: truthy(flags.secure),
+                        httpOnly: truthy(flags.httpOnly) || truthy(flags["http-only"]),
+                    };
+                    if (typeof flags.sameSite === "string") params.sameSite = flags.sameSite;
+                    if (typeof flags.domain === "string") params.domain = flags.domain;
+                    const r = await send("Network.setCookie", params);
+                    if (!r.success) throw bad("Gagal set cookie (cek secure/sameSite/domain).");
+                    return { ok: true, name, url: t0.url };
+                }
+                if (sub === "delete" || sub === "remove") {
+                    const name = args[1];
+                    if (!name) throw bad("Pakai: cookies delete <name>");
+                    await send("Network.deleteCookies", { name: String(name), url: t0.url });
+                    return { ok: true, deleted: name };
+                }
+                if (sub === "clear") {
+                    const { cookies } = await send("Network.getCookies", { urls: [t0.url] });
+                    for (const c of cookies) await send("Network.deleteCookies", { name: c.name, url: t0.url, domain: c.domain, path: c.path });
+                    return { ok: true, cleared: cookies.length };
+                }
+                const { cookies } = await send("Network.getCookies", { urls: [t0.url] });
+                return cookies.map((c) => ({
+                    name: c.name,
+                    value: c.value,
+                    domain: c.domain,
+                    path: c.path,
+                    httpOnly: !!c.httpOnly,
+                    secure: !!c.secure,
+                    sameSite: c.sameSite || null,
+                    session: !!c.session,
+                    expires: c.session ? null : c.expires,
+                }));
+            });
+        }
+
+        case "storage": {
+            const sub = String(args[0] || "list").toLowerCase();
+            const id = await target();
+            const area = truthy(flags.sessionStorage) || truthy(flags["session-storage"]) ? "session" : "local";
+            if (["list", "get", "set", "remove", "clear"].includes(sub)) {
+                return dom(id, flags, "storage", { area, action: sub, key: args[1], value: args[2] });
+            }
+            throw bad("Pakai: storage [list|get <k>|set <k> <v>|remove <k>|clear] [--session-storage]");
         }
 
         case "upload": {
