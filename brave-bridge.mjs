@@ -23,7 +23,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "
 import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "2.4.0";
+const VERSION = "2.5.0";
 const PROTOCOL = 2;
 const HOST = "127.0.0.1";
 const PORT = Number(process.env.BRAVE_BRIDGE_PORT || 8787);
@@ -86,7 +86,7 @@ function saveConfig(cfg) {
 // Flag boolean murni: jangan "makan" argumen positional sesudahnya.
 const BOOL_FLAGS = new Set(["new", "nowait", "background", "hard", "isolated", "cdp", "no-cdp", "append", "force", "clear", "gone",
     "full", "jpeg", "jpg", "viewport", "no-headings", "failed", "dry-run", "no-group", "json", "verbose", "reset-ext", "help", "all",
-    "foreground", "activate", "all-sessions"]);
+    "foreground", "activate", "all-sessions", "double", "landscape", "no-bg", "secure", "httpOnly", "http-only", "sessionStorage", "session-storage"]);
 const argv = process.argv.slice(2);
 const positional = [];
 const flags = {};
@@ -490,6 +490,14 @@ async function saveShot(result) {
     return file;
 }
 
+async function savePdf(result) {
+    if (!result || !result.pdfBase64) return null;
+    const file = flags.out && flags.out !== true ? path.resolve(String(flags.out)) : path.join(ARTIFACT_DIR, `page-${ts()}.pdf`);
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, Buffer.from(result.pdfBase64, "base64"));
+    return file;
+}
+
 async function readStdin() {
     let s = "";
     for await (const c of process.stdin) s += c;
@@ -617,7 +625,8 @@ Baca halaman:
        [--isolated] [--cdp] [--no-cdp]
 
 Interaksi (selector: css | @N | text=Label | host >>> inner; tembus shadow DOM):
-  click <sel> [--text "Label"] [--index N] [--cdp]
+  click <sel> [--text "Label"] [--index N] [--double] [--button right] [--cdp]
+  dblclick <sel> [--cdp] | rightclick <sel> [--cdp] | drag <asal> <tujuan> [--cdp]
   hover <sel> [--cdp] | focus <sel> [--clear]
   fill <sel> <value> [--append] [--cdp]       # React/contentEditable aman
   type <sel> <value> [--append] [--cdp]       # per karakter
@@ -627,14 +636,19 @@ Interaksi (selector: css | @N | text=Label | host >>> inner; tembus shadow DOM):
   #   --activate = opsional: aktifkan tab sebentar lalu kembalikan (kalau situs butuh tab kelihatan).
   scroll [top|bottom|+500|-500|sel]
   upload <sel input[type=file]> <file...>     # via CDP
+  dialog accept|dismiss|once-accept|once-dismiss|auto-accept|auto-dismiss|off|status [promptText]
   --frame N | --frame all                     # target iframe (lihat: frames)
+
+Cookies & Storage (termasuk HttpOnly via CDP, dibatasi ke origin tab agent):
+  cookies [list | set <k> <v> [--http-only] [--secure] [--sameSite Lax|Strict|None] | delete <k> | clear]
+  storage [list | get <k> | set <k> <v> | remove <k> | clear] [--session-storage]
 
 Tunggu:
   wait <ms> | waitFor <sel> [--gone] | waitFor --text "..." [--gone] | waitUrl <substr|/regex/>
 
-Screenshot:
+Screenshot & PDF:
   shot [--jpeg] [--quality 80] [--selector sel] [--full] [--out file] [--activate]
-  # tab background dipotret via CDP tanpa memindah fokus user; --activate = cara lama (aktifkan sebentar)
+  pdf [--landscape] [--no-bg] [--out file.pdf]
 
 Console & network (CDP, Brave tampilkan bar "debugging" selama capture):
   capture start|stop|status [--tabId N]
@@ -707,6 +721,12 @@ async function runCli() {
         console.log(`shot: ${file || "(gagal simpan)"}`);
         console.log(`tab: ${json.result.title} — ${json.result.url}`);
         console.log(`mode: ${json.result.note}`);
+        return;
+    }
+    if (cmd === "pdf") {
+        const file = await savePdf(json.result);
+        console.log(`pdf: ${file || "(gagal simpan)"}`);
+        console.log(`tab: ${json.result.title} — ${json.result.url}`);
         return;
     }
     console.log(pretty(cmd, json.result));

@@ -9,7 +9,7 @@
  *   host >>> inner      -> tembus shadow DOM secara eksplisit
  */
 (() => {
-    const VERSION = "2.0.0";
+    const VERSION = "2.5.0";
     if (globalThis.__bb && globalThis.__bb.v === VERSION) return;
 
     const INTERACTIVE =
@@ -282,6 +282,54 @@
             return { ok: true, ...describe(el) };
         },
 
+        dblclick(o) {
+            const el = find(o);
+            const { x, y } = center(el);
+            pointerSeq(el, x, y, true);
+            pointerSeq(el, x, y, true);
+            el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, detail: 2, view: window }));
+            return { ok: true, ...describe(el) };
+        },
+
+        rightclick(o) {
+            const el = find(o);
+            const { x, y } = center(el);
+            const base = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, button: 2, view: window };
+            el.dispatchEvent(new PointerEvent("pointerdown", { ...base, pointerId: 1, pointerType: "mouse", isPrimary: true, buttons: 2 }));
+            el.dispatchEvent(new MouseEvent("mousedown", { ...base, buttons: 2 }));
+            el.dispatchEvent(new PointerEvent("pointerup", { ...base, pointerId: 1, pointerType: "mouse", isPrimary: true, buttons: 0 }));
+            el.dispatchEvent(new MouseEvent("mouseup", { ...base, buttons: 0 }));
+            el.dispatchEvent(new MouseEvent("contextmenu", { ...base, buttons: 0 }));
+            return { ok: true, ...describe(el) };
+        },
+
+        drag(o) {
+            const src = find({ sel: o.from });
+            const dst = find({ sel: o.to });
+            const a = center(src);
+            const b = center(dst);
+            const pBase = { bubbles: true, cancelable: true, composed: true, pointerId: 1, pointerType: "mouse", isPrimary: true, view: window };
+            // 1) Pointer/mouse drag sequence (dnd-kit, SortableJS, custom drag handlers).
+            src.dispatchEvent(new PointerEvent("pointerdown", { ...pBase, clientX: a.x, clientY: a.y, button: 0, buttons: 1 }));
+            src.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, composed: true, clientX: a.x, clientY: a.y, button: 0, buttons: 1, view: window }));
+            const mx = (a.x + b.x) / 2;
+            const my = (a.y + b.y) / 2;
+            document.dispatchEvent(new PointerEvent("pointermove", { ...pBase, clientX: mx, clientY: my, buttons: 1 }));
+            document.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, cancelable: true, composed: true, clientX: mx, clientY: my, buttons: 1, view: window }));
+            dst.dispatchEvent(new PointerEvent("pointermove", { ...pBase, clientX: b.x, clientY: b.y, buttons: 1 }));
+            dst.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, cancelable: true, composed: true, clientX: b.x, clientY: b.y, buttons: 1, view: window }));
+            // 2) HTML5 DragEvent + DataTransfer (native draggable="true").
+            const dt = new DataTransfer();
+            src.dispatchEvent(new DragEvent("dragstart", { bubbles: true, cancelable: true, composed: true, clientX: a.x, clientY: a.y, dataTransfer: dt }));
+            dst.dispatchEvent(new DragEvent("dragenter", { bubbles: true, cancelable: true, composed: true, clientX: b.x, clientY: b.y, dataTransfer: dt }));
+            dst.dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true, composed: true, clientX: b.x, clientY: b.y, dataTransfer: dt }));
+            dst.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, composed: true, clientX: b.x, clientY: b.y, dataTransfer: dt }));
+            src.dispatchEvent(new DragEvent("dragend", { bubbles: true, cancelable: true, composed: true, clientX: b.x, clientY: b.y, dataTransfer: dt }));
+            dst.dispatchEvent(new PointerEvent("pointerup", { ...pBase, clientX: b.x, clientY: b.y, button: 0, buttons: 0 }));
+            dst.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, composed: true, clientX: b.x, clientY: b.y, button: 0, buttons: 0, view: window }));
+            return { ok: true, from: describe(src), to: describe(dst) };
+        },
+
         hover(o) {
             const el = find(o);
             const { x, y } = center(el);
@@ -493,6 +541,31 @@
                 value: e.type === "password" ? (e.value ? "***" : "") : e.type === "checkbox" || e.type === "radio" ? e.checked : cut(String(e.value || ""), 60),
                 visible: visible(e),
             }));
+        },
+
+        storage(o) {
+            const store = o.area === "session" ? sessionStorage : localStorage;
+            const act = o.action || "list";
+            if (act === "get") return store.getItem(String(o.key));
+            if (act === "set") {
+                store.setItem(String(o.key), String(o.value ?? ""));
+                return { ok: true, key: String(o.key) };
+            }
+            if (act === "remove") {
+                store.removeItem(String(o.key));
+                return { ok: true, removed: String(o.key) };
+            }
+            if (act === "clear") {
+                store.clear();
+                return { ok: true, cleared: o.area === "session" ? "sessionStorage" : "localStorage" };
+            }
+            const out = {};
+            for (let i = 0; i < store.length; i++) {
+                const k = store.key(i);
+                const v = store.getItem(k) || "";
+                out[k] = v.length > 500 ? v.slice(0, 500) + `…(${v.length} chars)` : v;
+            }
+            return { origin: location.origin, area: o.area === "session" ? "session" : "local", count: store.length, entries: out };
         },
     };
 

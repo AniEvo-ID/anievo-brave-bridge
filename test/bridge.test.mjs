@@ -66,6 +66,11 @@ function createFixtureServer(bridgePort) {
 <button id="trusted">Trusted?</button><p>isTrusted: <b id="trustedResult"></b></p>
 <p>Last key: <b id="lastKey"></b></p>
 <button id="logBtn">Log</button>
+<button id="dblBtn">Dbl</button><button id="ctxBtn">Ctx</button><p>Mouse: <b id="mouseExtra"></b></p>
+<div id="dragSrc" draggable="true" style="display:inline-block;padding:4px;border:1px solid #333">Item</div>
+<div id="dropDst" style="display:inline-block;padding:8px;border:1px dashed #333">Dropzone</div>
+<p>Drag: <b id="dragResult"></b></p>
+<button id="promptBtn">Ask</button><p>Dialog: <b id="dialogResult"></b></p>
 <p id="attackResult">pending</p>
 <div class="tall">spacer</div>
 <script>
@@ -86,6 +91,12 @@ file.addEventListener("change", () => { fileName.textContent = file.files[0] ? f
 trusted.addEventListener("click", (ev) => { trustedResult.textContent = String(ev.isTrusted); });
 document.addEventListener("keydown", (ev) => { lastKey.textContent = ev.key + " trusted=" + ev.isTrusted; });
 logBtn.onclick = () => { console.log("hello fixture"); fetch("/api/ping"); fetch("/api/missing"); };
+dblBtn.ondblclick = () => { mouseExtra.textContent = "dbl"; };
+ctxBtn.oncontextmenu = (ev) => { ev.preventDefault(); mouseExtra.textContent = "ctx"; };
+dragSrc.addEventListener("dragstart", (ev) => ev.dataTransfer.setData("text/plain", "item-1"));
+dropDst.addEventListener("dragover", (ev) => ev.preventDefault());
+dropDst.addEventListener("drop", (ev) => { ev.preventDefault(); dragResult.textContent = "dropped:" + ev.dataTransfer.getData("text/plain"); });
+promptBtn.onclick = () => { dialogResult.textContent = String(prompt("Nama?", "anon")); };
 window.getData = async () => { await new Promise((r) => setTimeout(r, 80)); return { answer: 42 }; };
 (async () => {
   const out = [];
@@ -380,6 +391,33 @@ test("AniEvo Brave Bridge — security, CLI + extension E2E, session groups, and
         assert.match((await cli(["shot", "--selector", "#menuBtn", "--tabId", tab])).out, /shot: .*\.png/);
         assert.match((await cli(["shot", "--full", "--jpeg", "--tabId", tab])).out, /shot: .*\.jpg/);
 
+        // v2.5: dblclick, rightclick, drag, dialog, cookies (HttpOnly), storage, pdf.
+        await cli(["dblclick", "#dblBtn", "--tabId", tab]);
+        assert.equal((await cli(["text", "#mouseExtra", "--tabId", tab])).out, "dbl");
+        await cli(["rightclick", "#ctxBtn", "--tabId", tab]);
+        assert.equal((await cli(["text", "#mouseExtra", "--tabId", tab])).out, "ctx");
+        await cli(["drag", "#dragSrc", "#dropDst", "--tabId", tab]);
+        assert.equal((await cli(["text", "#dragResult", "--tabId", tab])).out, "dropped:item-1");
+
+        await cli(["dialog", "once-accept", "AriEvo", "--tabId", tab]);
+        await cli(["click", "#promptBtn", "--tabId", tab]);
+        assert.equal((await cli(["text", "#dialogResult", "--tabId", tab])).out, "AriEvo");
+
+        await cli(["cookies", "set", "sid", "secret123", "--http-only", "--tabId", tab]);
+        const ckList = JSON.parse((await cli(["cookies", "list", "--json", "--tabId", tab])).out);
+        const sidCk = ckList.find((c) => c.name === "sid");
+        assert.ok(sidCk && sidCk.value === "secret123" && sidCk.httpOnly === true);
+        await cli(["cookies", "delete", "sid", "--tabId", tab]);
+
+        await cli(["storage", "set", "theme", "dark", "--tabId", tab]);
+        assert.equal((await cli(["storage", "get", "theme", "--tabId", tab])).out, "dark");
+        await cli(["storage", "remove", "theme", "--tabId", tab]);
+
+        const pdfOut = path.join(tmp, "out.pdf");
+        const pdfRes = await cli(["pdf", "--out", pdfOut, "--tabId", tab]);
+        assert.equal(pdfRes.code, 0);
+        assert.equal(readFileSync(pdfOut).subarray(0, 5).toString("ascii"), "%PDF-");
+
         // Strict CSP fallback via CDP Runtime.evaluate.
         const cspTab = String(JSON.parse((await cli(["new", `${fixture.url}/csp`, "--json"])).out).tabId);
         assert.equal((await cli(["eval", "window.secret", "--tabId", cspTab])).out, "csp-ok");
@@ -458,7 +496,7 @@ test("AniEvo Brave Bridge — security, CLI + extension E2E, session groups, and
         p.stdin.write('{"jsonrpc":"2.0","method":"notifications/initialized"}\n');
 
         const tools = (await rpc("tools/list", {})).result.tools;
-        assert.equal(tools.length, 27);
+        assert.equal(tools.length, 32);
 
         const opened = JSON.parse((await call("browser_open", { url: `${fixture.url}/`, session: "mcp1" })).content[0].text);
         assert.equal(opened.group, "Antigravity-mcp1");
