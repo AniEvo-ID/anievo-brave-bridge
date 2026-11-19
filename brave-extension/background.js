@@ -966,7 +966,7 @@ function connect() {
 function scheduleReconnect() {
     clearTimeout(reconnectTimer);
     reconnectTimer = setTimeout(connect, backoff);
-    backoff = Math.min(backoff * 2, 15000);
+    backoff = Math.min(backoff * 2, 3000); // localhost: retry cepat biar konek ulang < 3 detik setelah server nyala
 }
 
 // Heartbeat dari sisi extension (aktivitas WS menjaga service worker tetap hidup).

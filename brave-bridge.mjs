@@ -22,7 +22,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "
 import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "2.1.0";
+const VERSION = "2.2.0";
 const PROTOCOL = 2;
 const HOST = "127.0.0.1";
 const PORT = Number(process.env.BRAVE_BRIDGE_PORT || 8787);
@@ -297,7 +297,9 @@ function startServer() {
 
             if (lc === "mine" || lc === "tabs-mine") return send(res, 200, { ok: true, result: [...mine.values()] });
 
-            if (!extAlive() && !(await waitExt(4000))) return send(res, 503, { ok: false, error: EXT_HINT, hint: EXT_DIR });
+            // Baru start -> extension mungkin masih dalam jeda reconnect: tunggu lebih lama.
+            const waitMs = process.uptime() < 30 ? 15000 : 4000;
+            if (!extAlive() && !(await waitExt(waitMs))) return send(res, 503, { ok: false, error: EXT_HINT, hint: EXT_DIR });
 
             // Default tab group + guard dari config (aturan: kerja di group sendiri).
             const createsNewTab = lc === "open" || lc === "new" || (lc === "goto" && (f.new === true || f.new === "true"));
