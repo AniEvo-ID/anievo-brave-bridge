@@ -22,7 +22,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "
 import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "2.0.0";
+const VERSION = "2.1.0";
 const PROTOCOL = 2;
 const HOST = "127.0.0.1";
 const PORT = Number(process.env.BRAVE_BRIDGE_PORT || 8787);
@@ -72,7 +72,8 @@ function saveConfig(cfg) {
 // ---------------------------------------------------------------- arg parsing
 // Flag boolean murni: jangan "makan" argumen positional sesudahnya.
 const BOOL_FLAGS = new Set(["new", "nowait", "background", "hard", "isolated", "cdp", "no-cdp", "append", "force", "clear", "gone",
-    "full", "jpeg", "jpg", "viewport", "no-headings", "failed", "dry-run", "no-group", "json", "verbose", "reset-ext", "help", "all"]);
+    "full", "jpeg", "jpg", "viewport", "no-headings", "failed", "dry-run", "no-group", "json", "verbose", "reset-ext", "help", "all",
+    "foreground", "activate"]);
 const argv = process.argv.slice(2);
 const positional = [];
 const flags = {};
@@ -508,7 +509,8 @@ Info:
   status | tabs [--group "Nama"] | active | frames | url | title
   window [--state normal|maximized|minimized|fullscreen] [--width W] [--height H]
 
-Tab (default: tab baru otomatis masuk group "Antigravity" ungu; --no-group untuk skip):
+Tab (default: tab baru dibuka di BACKGROUND -> fokus user tidak pindah; --foreground untuk langsung aktif.
+     Tab baru otomatis masuk group "Antigravity" ungu; --no-group untuk skip):
   new [url] | open <url> | goto <url> --new | goto <url> --tabId N
   close [tabId] | activate <tabId> | reload [--hard] | back | forward
   close-group ["Nama"]                        # tanpa nama = group default
@@ -528,6 +530,8 @@ Interaksi (selector: css | @N | text=Label | host >>> inner; tembus shadow DOM):
   type <sel> <value> [--append] [--cdp]       # per karakter
   select <sel> <value|label> | check <sel> | uncheck <sel>
   key <Combo> [sel] [--cdp]                   # --cdp = keyboard trusted
+  # Semua command (termasuk --cdp dan shot) jalan di tab BACKGROUND tanpa memindah fokus user.
+  #   --activate = opsional: aktifkan tab sebentar lalu kembalikan (kalau situs butuh tab kelihatan).
   scroll [top|bottom|+500|-500|sel]
   upload <sel input[type=file]> <file...>     # via CDP
   --frame N | --frame all                     # target iframe (lihat: frames)
@@ -536,8 +540,8 @@ Tunggu:
   wait <ms> | waitFor <sel> [--gone] | waitFor --text "..." [--gone] | waitUrl <substr|/regex/>
 
 Screenshot:
-  shot [--jpeg] [--quality 80] [--selector sel] [--full] [--out file]
-  # tab background otomatis diaktifkan sebentar lalu dikembalikan; --full pakai CDP
+  shot [--jpeg] [--quality 80] [--selector sel] [--full] [--out file] [--activate]
+  # tab background dipotret via CDP tanpa memindah fokus user; --activate = cara lama (aktifkan sebentar)
 
 Console & network (CDP, Brave tampilkan bar "debugging" selama capture):
   capture start|stop|status [--tabId N]

@@ -261,27 +261,59 @@ function parseCombo(combo) {
     return { key, code, vk, text, mods };
 }
 
-async function cdpClick(tabId, flags, o) {
-    if (flags.frame !== undefined) throw bad("--cdp click belum mendukung --frame.");
-    const r = await dom(tabId, flags, "rect", o);
-    const x = r.x + r.w / 2;
-    const y = r.y + r.h / 2;
-    await withDebugger(tabId, async (send) => {
-        await send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
-        await send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: 1 });
-        await send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: 1 });
-    });
-    return { ok: true, trusted: true, x: Math.round(x), y: Math.round(y) };
+// Input trusted (CDP Input.*) jalan juga di tab background berkat attach-dulu + focus emulation
+// (lihat withInput). --activate = opsi lama: aktifkan tab sebentar lalu kembalikan fokus user.
+async function inputVisible(tabId, flags, fn) {
+    const t = await chrome.tabs.get(tabId);
+    if (t.active || !truthy(flags.activate)) return fn();
+    return withTabVisible(tabId, () => fn());
 }
 
-async function cdpKey(tabId, combo) {
-    const k = parseCombo(combo);
-    await withDebugger(tabId, async (send) => {
-        const base = { key: k.key, code: k.code, windowsVirtualKeyCode: k.vk, nativeVirtualKeyCode: k.vk, modifiers: k.mods };
-        await send("Input.dispatchKeyEvent", k.text ? { ...base, type: "keyDown", text: k.text, unmodifiedText: k.text } : { ...base, type: "rawKeyDown" });
-        await send("Input.dispatchKeyEvent", { ...base, type: "keyUp" });
+// Attach dulu (bar "debugging" bikin layout geser), aktifkan focus emulation
+// (window Brave mungkin tidak fokus di OS), tunggu 2 frame, baru kirim input.
+async function withInput(tabId, fn) {
+    return withDebugger(tabId, async (send) => {
+        await send("Emulation.setFocusEmulationEnabled", { enabled: true }).catch(() => { });
+        // rAF tidak jalan di tab tersembunyi -> batasi 300ms.
+        await Promise.race([
+            chrome.scripting
+                .executeScript({ target: { tabId }, func: () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(true)))) })
+                .catch(() => { }),
+            sleep(300),
+        ]);
+        try {
+            return await fn(send);
+        } finally {
+            await send("Emulation.setFocusEmulationEnabled", { enabled: false }).catch(() => { });
+        }
     });
-    return { ok: true, trusted: true, key: k.key, modifiers: k.mods };
+}
+
+async function cdpClick(tabId, flags, o) {
+    if (flags.frame !== undefined) throw bad("--cdp click belum mendukung --frame.");
+    return inputVisible(tabId, flags, () =>
+        withInput(tabId, async (send) => {
+            const r = await dom(tabId, flags, "rect", o);
+            const x = r.x + r.w / 2;
+            const y = r.y + r.h / 2;
+            await send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
+            await send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: 1 });
+            await send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: 1 });
+            return { ok: true, trusted: true, x: Math.round(x), y: Math.round(y) };
+        })
+    );
+}
+
+async function cdpKey(tabId, combo, flags = {}) {
+    const k = parseCombo(combo);
+    return inputVisible(tabId, flags, () =>
+        withInput(tabId, async (send) => {
+            const base = { key: k.key, code: k.code, windowsVirtualKeyCode: k.vk, nativeVirtualKeyCode: k.vk, modifiers: k.mods };
+            await send("Input.dispatchKeyEvent", k.text ? { ...base, type: "keyDown", text: k.text, unmodifiedText: k.text } : { ...base, type: "rawKeyDown" });
+            await send("Input.dispatchKeyEvent", { ...base, type: "keyUp" });
+            return { ok: true, trusted: true, key: k.key, modifiers: k.mods };
+        })
+    );
 }
 
 async function cdpEval(tabId, src) {
@@ -358,7 +390,21 @@ async function withTabVisible(tabId, fn) {
         const [cur] = await chrome.tabs.query({ active: true, windowId: t.windowId });
         restore = cur ? cur.id : null;
         await chrome.tabs.update(tabId, { active: true });
-        await sleep(300);
+        // Tunggu renderer benar-benar visible + 2 frame, baru kirim input/capture.
+        const t0 = Date.now();
+        while (Date.now() - t0 < 3000) {
+            const r = await chrome.scripting
+                .executeScript({
+                    target: { tabId },
+                    func: () =>
+                        document.visibilityState === "visible"
+                            ? new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(() => res(true))))
+                            : false,
+                })
+                .catch(() => null);
+            if (r && r[0] && r[0].result === true) break;
+            await sleep(100);
+        }
     }
     try {
         return await fn(t);
@@ -397,32 +443,63 @@ async function shot(tabId, flags) {
     const quality = Number(flags.quality || 80);
     const t0 = await chrome.tabs.get(tabId);
     if (BLOCKED_SCHEME.test(t0.url || "") && (flags.selector || truthy(flags.full))) throw bad("Tidak bisa shot --selector/--full di halaman internal.");
-    let note = "viewport";
     let rect = null;
     if (flags.selector && flags.selector !== true) rect = await dom(tabId, flags, "rect", { sel: String(flags.selector) });
-    const dataUrl = await withTabVisible(tabId, async (t) => {
-        if (truthy(flags.full)) {
-            note = "full page (CDP)";
-            return withDebugger(tabId, async (send) => {
-                const m = await send("Page.getLayoutMetrics");
-                const cs = m.cssContentSize || m.contentSize;
-                const w = Math.ceil(cs.width);
-                const h = Math.min(Math.ceil(cs.height), 16000);
-                const r = await send("Page.captureScreenshot", {
-                    format,
-                    quality: format === "jpeg" ? quality : undefined,
-                    captureBeyondViewport: true,
-                    clip: { x: 0, y: 0, width: w, height: h, scale: 1 },
-                });
-                return `data:image/${format};base64,${r.data}`;
-            });
+    const full = truthy(flags.full);
+    const q = format === "jpeg" ? quality : undefined;
+
+    // Tab aktif & bukan full page: captureVisibleTab biasa (tanpa debugger).
+    if (t0.active && !full) {
+        let img = await chrome.tabs.captureVisibleTab(t0.windowId, { format, quality: q });
+        if (rect) img = await crop(img, rect, format, quality);
+        return { dataUrl: img, tabId, url: t0.url, title: t0.title, note: rect ? `elemen ${flags.selector}` : "viewport" };
+    }
+
+    // Mode lama (opt-in): aktifkan tab sebentar lalu kembalikan.
+    if (truthy(flags.activate) && !full) {
+        let img = await withTabVisible(tabId, (t) => chrome.tabs.captureVisibleTab(t.windowId, { format, quality: q }));
+        if (rect) img = await crop(img, rect, format, quality);
+        return { dataUrl: img, tabId, url: t0.url, title: t0.title, note: "viewport (tab diaktifkan sebentar)" };
+    }
+
+    // Tab background / full page: CDP, TANPA memindahkan fokus user.
+    // captureBeyondViewport memaksa render ulang -> andal di tab tersembunyi (capture viewport biasa
+    // bisa nunggu frame yang tidak pernah datang). Area dipilih lewat clip (koordinat halaman, CSS px).
+    const img = await withDebugger(tabId, async (send) => {
+        const m = await send("Page.getLayoutMetrics");
+        const vv = m.cssVisualViewport || m.visualViewport;
+        let clip;
+        if (full) {
+            const cs = m.cssContentSize || m.contentSize;
+            clip = { x: 0, y: 0, width: Math.ceil(cs.width), height: Math.min(Math.ceil(cs.height), 16000) };
+        } else if (rect) {
+            clip = { x: vv.pageX + rect.x, y: vv.pageY + rect.y, width: Math.max(1, rect.w), height: Math.max(1, rect.h) };
+        } else {
+            clip = { x: vv.pageX, y: vv.pageY, width: vv.clientWidth, height: vv.clientHeight };
         }
-        const img = await chrome.tabs.captureVisibleTab(t.windowId, { format, quality: format === "jpeg" ? quality : undefined });
-        if (!rect) return img;
-        note = `elemen ${flags.selector}`;
-        return crop(img, rect, format, quality);
+        const params = { format, quality: q, captureBeyondViewport: true, clip: { ...clip, scale: 1 } };
+        const attempt = () =>
+            Promise.race([
+                send("Page.captureScreenshot", params),
+                sleep(Number(flags.shotTimeout || 6000)).then(() => {
+                    throw bad("Timeout screenshot tab background via CDP. Coba: shot --activate (tab diaktifkan sebentar).");
+                }),
+            ]);
+        let r;
+        try {
+            r = await attempt();
+        } catch {
+            r = await attempt(); // sekali retry
+        }
+        return `data:image/${format};base64,${r.data}`;
     });
-    return { dataUrl, tabId, url: t0.url, title: t0.title, note };
+    return {
+        dataUrl: img,
+        tabId,
+        url: t0.url,
+        title: t0.title,
+        note: `${full ? "full page" : rect ? `elemen ${flags.selector}` : "viewport"} (CDP${t0.active ? "" : ", tab background, fokus user tidak dipindah"})`,
+    };
 }
 
 // ------------------------------------------------------------------ handlers
@@ -500,7 +577,7 @@ async function handle(cmd, params = {}) {
             let id;
             let groupId;
             if (asNew) {
-                const t = await chrome.tabs.create({ url, active: !truthy(flags.background) });
+                const t = await chrome.tabs.create({ url, active: truthy(flags.foreground) });
                 id = t.id;
                 groupId = await applyGroup(id, flags);
             } else {
@@ -514,7 +591,7 @@ async function handle(cmd, params = {}) {
 
         case "new": {
             const url = args[0] || flags.url || "about:blank";
-            const t = await chrome.tabs.create({ url, active: !truthy(flags.background) });
+            const t = await chrome.tabs.create({ url, active: truthy(flags.foreground) });
             const groupId = await applyGroup(t.id, flags);
             if (url !== "about:blank" && !truthy(flags.nowait)) await waitComplete(t.id, Number(flags.timeout || 25000));
             const tab = await chrome.tabs.get(t.id);
@@ -640,9 +717,11 @@ async function handle(cmd, params = {}) {
             const id = await target();
             const o = { sel: args[0] || "", text, index: idx };
             if (truthy(flags.cdp)) {
-                const r = await dom(id, flags, "rect", o);
-                await withDebugger(id, (send) => send("Input.dispatchMouseEvent", { type: "mouseMoved", x: r.x + r.w / 2, y: r.y + r.h / 2 }));
-                return { ok: true, trusted: true };
+                return inputVisible(id, flags, async () => {
+                    const r = await dom(id, flags, "rect", o);
+                    await withDebugger(id, (send) => send("Input.dispatchMouseEvent", { type: "mouseMoved", x: r.x + r.w / 2, y: r.y + r.h / 2 }));
+                    return { ok: true, trusted: true };
+                });
             }
             return dom(id, flags, "hover", o);
         }
@@ -659,9 +738,11 @@ async function handle(cmd, params = {}) {
             const id = await target();
             const append = truthy(flags.append);
             if (truthy(flags.cdp)) {
-                await dom(id, flags, "focus", { sel, index: idx, clear: !append });
-                await withDebugger(id, (send) => send("Input.insertText", { text: String(value) }));
-                return { ok: true, trusted: true, inserted: String(value).length };
+                return inputVisible(id, flags, async () => {
+                    await dom(id, flags, "focus", { sel, index: idx, clear: !append });
+                    await withDebugger(id, (send) => send("Input.insertText", { text: String(value) }));
+                    return { ok: true, trusted: true, inserted: String(value).length };
+                });
             }
             return dom(id, flags, cmd, { sel, value, append, index: idx });
         }
@@ -683,7 +764,7 @@ async function handle(cmd, params = {}) {
             const id = await target();
             if (truthy(flags.cdp)) {
                 if (args[1]) await dom(id, flags, "focus", { sel: args[1] });
-                return cdpKey(id, combo);
+                return cdpKey(id, combo, flags);
             }
             return dom(id, flags, "key", { combo, sel: args[1] || "" });
         }

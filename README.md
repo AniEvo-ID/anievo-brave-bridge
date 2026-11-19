@@ -7,6 +7,7 @@ Dibuat buat **AI coding agent** (Antigravity, Claude Code, Gemini CLI, dll.) sup
 - 🧩 Extension MV3 + CLI Node.js **tanpa dependency** (Node ≥ 18)
 - 🔒 Cuma localhost, pakai token auth, dan Origin extension di-pin
 - 🗂️ Tab buatan agent otomatis masuk tab group sendiri, dan tab milik user dilindungi guard
+- 🫥 **Nggak nyolong fokus**: tab agent dibuka dan dikerjain di background (klik, isi form, input trusted, screenshot), jadi lu tetap stay di tab lu
 - 🛠️ Mode CDP opsional via `chrome.debugger` (tetap tanpa relaunch)
 
 ---
@@ -83,7 +84,20 @@ node brave-bridge.mjs close-group                      # tutup semua tab group "
 | **Console/Network** | `capture start\|stop\|status`, `console [--level error] [--last N] [--clear] [--all]`, `net [--filter s] [--failed] [--body <id>]` |
 | **Maintenance** | `reload-ext`, `install-autostart`, `uninstall-autostart`, `help` |
 
-**Flag global:** `--tabId N`, `--timeout ms`, `--json`, `--frame N|all`, `--force`, `--no-group`
+**Flag global:** `--tabId N`, `--timeout ms`, `--json`, `--frame N|all`, `--force`, `--no-group`, `--foreground`, `--activate`
+
+### Kerja di background (fokus user aman)
+
+Tab baru **selalu dibuka di background** dan semua command jalan tanpa ngaktifin tab itu. Ini termasuk input trusted `--cdp` dan screenshot, bahkan waktu window Brave lagi di-minimize. Jadi lu bisa tetap kerja di tab lu sendiri sementara agent jalan di tab group-nya.
+
+| Mau | Pakai |
+|---|---|
+| Tab baru langsung aktif | `new <url> --foreground` |
+| Aktifkan tab agent sebentar lalu balikin fokus (buat situs yang butuh tab kelihatan) | `--activate` (di `shot`, `click/key/type/hover --cdp`) |
+| Pindah ke tab secara permanen | `activate <tabId>` |
+
+> [!NOTE]
+> Halaman di tab background bisa kena throttling timer dari browser (`setInterval` jadi minimal sekitar 1 detik). `waitFor` tetap responsif karena pakai `MutationObserver`.
 
 ### Selector
 
@@ -101,7 +115,7 @@ node brave-bridge.mjs close-group                      # tutup semua tab group "
 
 Kalau ditambah `--cdp` (atau lewat `capture`, `upload`, `shot --full`, dan fallback `eval` di halaman yang CSP-nya ketat), extension nempel ke tab lewat `chrome.debugger`. **Tetap tanpa relaunch.** Yang jadi bisa:
 
-- **Input trusted** (`event.isTrusted === true`): `click --cdp`, `key --cdp`, `type --cdp`
+- **Input trusted** (`event.isTrusted === true`): `click --cdp`, `key --cdp`, `type --cdp`. Jalan juga di tab background, karena debugger di-attach dulu sebelum koordinat dihitung dan pakai focus emulation.
 - `eval` yang tembus CSP (`Runtime.evaluate`), termasuk top-level `await`
 - Capture console dan network, plus isi response (`net --body`)
 - Upload file ke `<input type="file">`
@@ -148,7 +162,7 @@ Environment variable: `BRAVE_BRIDGE_PORT` (default `8787`), `BRAVE_BRIDGE_TIMEOU
 
 - Nggak bisa inject ke halaman internal (`brave://`, `chrome://`, Chrome Web Store).
 - Shortcut native browser (mis. `Ctrl+T`) nggak bisa dipicu, termasuk lewat `--cdp`.
-- `shot` tanpa `--full` cuma nangkep viewport. Kalau tab target lagi di background, tab itu diaktifkan sebentar lalu tab sebelumnya dibalikin.
+- `shot` di tab aktif pakai `captureVisibleTab` (tanpa debugger). Di tab background dan `--full` pakai CDP, jadi bar "debugging" sempat muncul sebentar.
 - `--cdp click` belum mendukung elemen di dalam iframe.
 - Kalau DevTools lagi kebuka di tab yang sama, attach debugger bisa gagal.
 
