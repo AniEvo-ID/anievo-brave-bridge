@@ -1,6 +1,6 @@
 {
   "name": "anievo-brave-bridge",
-  "version": "2.6.1",
+  "version": "2.6.2",
   "description": "Control a running Brave/Chromium browser (without closing or relaunching) via an MV3 extension, zero-dependency CLI, and 33-tool MCP server.",
   "type": "module",
   "license": "MIT",
@@ -26,7 +26,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/AniEvo-ID/anievo-brave-bridge.git"
+    "url": "git+https://github.com/AniEvo-ID/anievo-brave-bridge.git"
   },
   "files": [
     "brave-bridge.mjs",
@@ -41,8 +41,8 @@
     "LICENSE"
   ],
   "bin": {
-    "brave-bridge": "./brave-bridge.mjs",
-    "brave-bridge-mcp": "./mcp.mjs"
+    "brave-bridge": "brave-bridge.mjs",
+    "brave-bridge-mcp": "mcp.mjs"
   },
   "scripts": {
     "serve": "node brave-bridge.mjs serve",

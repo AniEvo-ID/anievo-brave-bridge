@@ -17,7 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "2.6.1";
+const VERSION = "2.6.2";
 const PORT = Number(process.env.BRAVE_BRIDGE_PORT || 8787);
 const BASE = `http://127.0.0.1:${PORT}`;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
